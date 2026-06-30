@@ -1,0 +1,412 @@
+import 'dart:convert';
+
+import 'package:flutter/foundation.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+
+import 'control_points.dart';
+import 'round_history.dart';
+import 'round_state.dart';
+import 'user_configuration.dart';
+
+class LocalStorage {
+  LocalStorage._internal();
+
+  static final LocalStorage instance = LocalStorage._internal();
+
+  static const String _historyKey = 'rondaqr_history_v1';
+  static const String _activeRoundKey = 'rondaqr_active_round_v1';
+  static const String _userConfigurationKey = 'rondaqr_user_configuration_v1';
+  static const String _controlPointsKey = 'rondaqr_control_points_v1';
+
+  Future<void> saveControlPoints(List<ControlPointDefinition> points) async {
+    final SharedPreferences preferences = await SharedPreferences.getInstance();
+
+    final List<Map<String, dynamic>> encodedPoints = points.map((point) {
+      return {
+        'id': point.id,
+        'name': point.name,
+        'qrIdentifier': point.qrIdentifier,
+        'description': point.description,
+        'order': point.order,
+        'isActive': point.isActive,
+        'iconKey': point.iconKey,
+      };
+    }).toList();
+
+    final bool saved = await preferences.setString(
+      _controlPointsKey,
+      jsonEncode(encodedPoints),
+    );
+
+    if (!saved) {
+      throw Exception('No fue posible guardar los puntos de control.');
+    }
+  }
+
+  Future<List<ControlPointDefinition>?> loadControlPoints() async {
+    try {
+      final SharedPreferences preferences =
+          await SharedPreferences.getInstance();
+      final String? savedText = preferences.getString(_controlPointsKey);
+
+      if (savedText == null || savedText.isEmpty) {
+        return null;
+      }
+
+      final dynamic decoded = jsonDecode(savedText);
+
+      if (decoded is! List) {
+        return null;
+      }
+
+      final List<ControlPointDefinition> points = [];
+      final Set<String> usedQrIdentifiers = {};
+
+      for (int index = 0; index < decoded.length; index++) {
+        final dynamic item = decoded[index];
+
+        if (item is! Map) {
+          continue;
+        }
+
+        final Map<String, dynamic> pointMap = Map<String, dynamic>.from(item);
+        final String name = pointMap['name'] is String
+            ? (pointMap['name'] as String).trim()
+            : '';
+        final String qrIdentifier =
+            ControlPointDefinition.normalizeQrIdentifier(
+              pointMap['qrIdentifier'] is String
+                  ? pointMap['qrIdentifier'] as String
+                  : '',
+            );
+
+        if (name.isEmpty ||
+            qrIdentifier.isEmpty ||
+            usedQrIdentifiers.contains(qrIdentifier)) {
+          continue;
+        }
+
+        usedQrIdentifiers.add(qrIdentifier);
+
+        final String savedId = pointMap['id'] is String
+            ? (pointMap['id'] as String).trim()
+            : '';
+        final String description = pointMap['description'] is String
+            ? (pointMap['description'] as String).trim()
+            : '';
+        final String? iconKey = pointMap['iconKey'] is String
+            ? pointMap['iconKey'] as String
+            : null;
+
+        points.add(
+          ControlPointDefinition(
+            id: savedId.isEmpty ? 'stored_${index}_$qrIdentifier' : savedId,
+            name: name,
+            qrIdentifier: qrIdentifier,
+            description: description,
+            order: (pointMap['order'] as num?)?.toInt() ?? index + 1,
+            isActive: pointMap['isActive'] as bool? ?? true,
+            iconKey: ControlPointIcons.values.containsKey(iconKey)
+                ? iconKey
+                : null,
+          ),
+        );
+      }
+
+      if (decoded.isNotEmpty && points.isEmpty) {
+        return null;
+      }
+
+      return points;
+    } catch (error) {
+      debugPrint('Error cargando puntos de control: $error');
+      return null;
+    }
+  }
+
+  Future<void> saveUserConfiguration(UserConfiguration configuration) async {
+    final SharedPreferences preferences = await SharedPreferences.getInstance();
+
+    final Map<String, String> encodedConfiguration = {
+      'guardName': configuration.guardName,
+      'identifier': configuration.identifier,
+      'installationName': configuration.installationName,
+      'company': configuration.company,
+      'shift': configuration.shift,
+      'role': configuration.role,
+    };
+
+    final bool saved = await preferences.setString(
+      _userConfigurationKey,
+      jsonEncode(encodedConfiguration),
+    );
+
+    if (!saved) {
+      throw Exception('No fue posible guardar la configuración.');
+    }
+  }
+
+  Future<UserConfiguration?> loadUserConfiguration() async {
+    try {
+      final SharedPreferences preferences =
+          await SharedPreferences.getInstance();
+      final String? savedText = preferences.getString(_userConfigurationKey);
+
+      if (savedText == null || savedText.isEmpty) {
+        return null;
+      }
+
+      final dynamic decoded = jsonDecode(savedText);
+
+      if (decoded is! Map) {
+        return null;
+      }
+
+      final Map<String, dynamic> configurationMap = Map<String, dynamic>.from(
+        decoded,
+      );
+
+      String readText(String key) {
+        final dynamic value = configurationMap[key];
+        return value is String ? value.trim() : '';
+      }
+
+      return UserConfiguration(
+        guardName: readText('guardName'),
+        identifier: readText('identifier'),
+        installationName: readText('installationName'),
+        company: readText('company'),
+        shift: readText('shift'),
+        role: readText('role'),
+      );
+    } catch (error) {
+      debugPrint('Error cargando configuración: $error');
+      return null;
+    }
+  }
+
+  Future<void> saveHistory(List<RoundHistoryItem> rounds) async {
+    final SharedPreferences preferences = await SharedPreferences.getInstance();
+
+    final List<Map<String, dynamic>> encodedRounds = rounds.map((round) {
+      return {
+        'id': round.id,
+        'guardName': round.guardName,
+        'installation': round.installation,
+        'startedAt': round.startedAt.toIso8601String(),
+        'finishedAt': round.finishedAt.toIso8601String(),
+        'totalPoints': round.totalPoints,
+        'completedPoints': round.completedPoints,
+        'noveltyCount': round.noveltyCount,
+        'points': round.points.map((point) {
+          return {
+            'name': point.name,
+            'completed': point.completed,
+            'hasNovelty': point.hasNovelty,
+            'observation': point.observation,
+            'completedAt': point.completedAt?.toIso8601String(),
+          };
+        }).toList(),
+      };
+    }).toList();
+
+    final bool saved = await preferences.setString(
+      _historyKey,
+      jsonEncode(encodedRounds),
+    );
+
+    if (!saved) {
+      throw Exception('No fue posible guardar el historial.');
+    }
+  }
+
+  Future<List<RoundHistoryItem>> loadHistory() async {
+    final SharedPreferences preferences = await SharedPreferences.getInstance();
+
+    final String? savedText = preferences.getString(_historyKey);
+
+    if (savedText == null || savedText.isEmpty) {
+      return [];
+    }
+
+    try {
+      final dynamic decoded = jsonDecode(savedText);
+
+      if (decoded is! List) {
+        return [];
+      }
+
+      return decoded.map<RoundHistoryItem>((dynamic item) {
+        final Map<String, dynamic> roundMap = Map<String, dynamic>.from(
+          item as Map,
+        );
+
+        final List<dynamic> pointsData =
+            roundMap['points'] as List<dynamic>? ?? [];
+
+        final List<RoundHistoryPoint> points = pointsData
+            .map<RoundHistoryPoint>((dynamic pointItem) {
+              final Map<String, dynamic> pointMap = Map<String, dynamic>.from(
+                pointItem as Map,
+              );
+
+              final String? completedAtText =
+                  pointMap['completedAt'] as String?;
+
+              return RoundHistoryPoint(
+                name: pointMap['name'] as String? ?? 'Punto sin nombre',
+                completed: pointMap['completed'] as bool? ?? false,
+                hasNovelty: pointMap['hasNovelty'] as bool? ?? false,
+                observation: pointMap['observation'] as String? ?? '',
+                completedAt: completedAtText == null
+                    ? null
+                    : DateTime.tryParse(completedAtText),
+              );
+            })
+            .toList();
+
+        final String? startedAtText = roundMap['startedAt'] as String?;
+
+        final String? finishedAtText = roundMap['finishedAt'] as String?;
+
+        final DateTime now = DateTime.now();
+
+        return RoundHistoryItem(
+          id:
+              roundMap['id'] as String? ??
+              now.microsecondsSinceEpoch.toString(),
+          guardName: roundMap['guardName'] as String? ?? 'Guardia',
+          installation: roundMap['installation'] as String? ?? 'Instalación',
+          startedAt: DateTime.tryParse(startedAtText ?? '') ?? now,
+          finishedAt: DateTime.tryParse(finishedAtText ?? '') ?? now,
+          totalPoints: (roundMap['totalPoints'] as num?)?.toInt() ?? 0,
+          completedPoints: (roundMap['completedPoints'] as num?)?.toInt() ?? 0,
+          noveltyCount: (roundMap['noveltyCount'] as num?)?.toInt() ?? 0,
+          points: points,
+        );
+      }).toList();
+    } catch (error) {
+      debugPrint('Error cargando historial: $error');
+
+      return [];
+    }
+  }
+
+  Future<void> saveActiveRound(ActiveRoundSnapshot activeRound) async {
+    final SharedPreferences preferences = await SharedPreferences.getInstance();
+
+    final Map<String, dynamic> encodedRound = {
+      'startedAt': activeRound.startedAt.toIso8601String(),
+      'finishedAt': activeRound.finishedAt?.toIso8601String(),
+      'points': activeRound.points.map((point) {
+        return {
+          'id': point.id,
+          'name': point.name,
+          'qrIdentifier': point.qrIdentifier,
+          'description': point.description,
+          'order': point.order,
+          'iconKey': point.iconKey,
+          'completed': point.completed,
+          'hasNovelty': point.hasNovelty,
+          'observation': point.observation,
+          'completedAt': point.completedAt?.toIso8601String(),
+        };
+      }).toList(),
+    };
+
+    final bool saved = await preferences.setString(
+      _activeRoundKey,
+      jsonEncode(encodedRound),
+    );
+
+    if (!saved) {
+      throw Exception('No fue posible guardar la ronda activa.');
+    }
+  }
+
+  Future<ActiveRoundSnapshot?> loadActiveRound() async {
+    try {
+      final SharedPreferences preferences =
+          await SharedPreferences.getInstance();
+
+      final String? savedText = preferences.getString(_activeRoundKey);
+
+      if (savedText == null || savedText.isEmpty) {
+        return null;
+      }
+
+      final dynamic decoded = jsonDecode(savedText);
+
+      if (decoded is! Map) {
+        return null;
+      }
+
+      final Map<String, dynamic> roundMap = Map<String, dynamic>.from(decoded);
+
+      final DateTime? startedAt = DateTime.tryParse(
+        roundMap['startedAt'] as String? ?? '',
+      );
+      final DateTime? finishedAt = DateTime.tryParse(
+        roundMap['finishedAt'] as String? ?? '',
+      );
+
+      if (startedAt == null) {
+        return null;
+      }
+
+      final List<dynamic> pointsData =
+          roundMap['points'] as List<dynamic>? ?? [];
+
+      final List<ActiveRoundPointSnapshot> points = pointsData
+          .map<ActiveRoundPointSnapshot>((dynamic pointItem) {
+            final Map<String, dynamic> pointMap = Map<String, dynamic>.from(
+              pointItem as Map,
+            );
+
+            final String? completedAtText = pointMap['completedAt'] as String?;
+
+            return ActiveRoundPointSnapshot(
+              id: pointMap['id'] as String?,
+              name: pointMap['name'] as String? ?? 'Punto sin nombre',
+              qrIdentifier: pointMap['qrIdentifier'] as String?,
+              description: pointMap['description'] as String?,
+              order: (pointMap['order'] as num?)?.toInt(),
+              iconKey: pointMap['iconKey'] as String?,
+              completed: pointMap['completed'] as bool? ?? false,
+              hasNovelty: pointMap['hasNovelty'] as bool? ?? false,
+              observation: pointMap['observation'] as String? ?? '',
+              completedAt: completedAtText == null
+                  ? null
+                  : DateTime.tryParse(completedAtText),
+            );
+          })
+          .toList();
+
+      return ActiveRoundSnapshot(
+        startedAt: startedAt,
+        finishedAt: finishedAt,
+        points: points,
+      );
+    } catch (error) {
+      debugPrint('Error cargando ronda activa: $error');
+
+      return null;
+    }
+  }
+
+  Future<void> clearActiveRound() async {
+    final SharedPreferences preferences = await SharedPreferences.getInstance();
+
+    final bool removed = await preferences.remove(_activeRoundKey);
+
+    if (!removed) {
+      throw Exception('No fue posible eliminar la ronda activa.');
+    }
+  }
+
+  Future<void> clearHistory() async {
+    final SharedPreferences preferences = await SharedPreferences.getInstance();
+
+    await preferences.remove(_historyKey);
+  }
+}
