@@ -1,4 +1,8 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:path_provider/path_provider.dart';
 
 import '../round_state.dart';
 import '../user_configuration.dart';
@@ -26,15 +30,207 @@ class _PointConfirmationScreenState extends State<PointConfirmationScreen> {
   static const Color fondo = Color(0xFFF4F7FB);
   static const Color naranja = Color(0xFFF59E0B);
 
+  static const List<String> categoriasNovedad = [
+    'Acceso',
+    'Seguridad',
+    'Infraestructura',
+    'Equipamiento',
+    'Iluminación',
+    'Otro',
+  ];
+
+  static const List<String> gravedadesNovedad = [
+    'Baja',
+    'Media',
+    'Alta',
+    'Crítica',
+  ];
+
   final TextEditingController observacionController = TextEditingController();
+  final ImagePicker _imagePicker = ImagePicker();
 
   bool conNovedad = false;
   bool guardando = false;
+  String? categoriaNovedad;
+  String? gravedadNovedad;
+  String? fotoNovedadPath;
+
+  @override
+  void initState() {
+    super.initState();
+    _recuperarImagenInterrumpida();
+  }
 
   @override
   void dispose() {
     observacionController.dispose();
     super.dispose();
+  }
+
+  Future<void> _recuperarImagenInterrumpida() async {
+    try {
+      final LostDataResponse response = await _imagePicker.retrieveLostData();
+
+      if (response.isEmpty || !mounted) {
+        return;
+      }
+
+      final XFile? recoveredFile = response.files?.firstOrNull;
+
+      if (recoveredFile != null) {
+        setState(() {
+          conNovedad = true;
+          fotoNovedadPath = recoveredFile.path;
+        });
+      }
+    } catch (_) {
+      // La pantalla puede continuar sin la fotografía recuperada.
+    }
+  }
+
+  Future<void> _mostrarOpcionesFoto() async {
+    if (guardando) {
+      return;
+    }
+
+    final ImageSource? source = await showModalBottomSheet<ImageSource>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (bottomSheetContext) {
+        return Container(
+          padding: const EdgeInsets.fromLTRB(20, 18, 20, 26),
+          decoration: const BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+          ),
+          child: SafeArea(
+            top: false,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 48,
+                  height: 5,
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFD0D5DD),
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                ),
+                const SizedBox(height: 20),
+                const Text(
+                  'Agregar fotografía',
+                  style: TextStyle(
+                    color: azulOscuro,
+                    fontSize: 20,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                const SizedBox(height: 16),
+                ListTile(
+                  leading: const Icon(
+                    Icons.photo_camera_outlined,
+                    color: azulPrincipal,
+                  ),
+                  title: const Text('Tomar fotografía'),
+                  onTap: () {
+                    Navigator.pop(bottomSheetContext, ImageSource.camera);
+                  },
+                ),
+                ListTile(
+                  leading: const Icon(
+                    Icons.photo_library_outlined,
+                    color: azulPrincipal,
+                  ),
+                  title: const Text('Elegir desde galería'),
+                  onTap: () {
+                    Navigator.pop(bottomSheetContext, ImageSource.gallery);
+                  },
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+
+    if (source == null || !mounted) {
+      return;
+    }
+
+    try {
+      final XFile? image = await _imagePicker.pickImage(
+        source: source,
+        maxWidth: 1600,
+        maxHeight: 1600,
+        imageQuality: 82,
+        requestFullMetadata: false,
+      );
+
+      if (image != null && mounted) {
+        setState(() {
+          fotoNovedadPath = image.path;
+        });
+      }
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'No fue posible obtener la fotografía. Revisa los permisos de cámara.',
+            ),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    }
+  }
+
+  Future<String?> _guardarFotoPermanente() async {
+    final String? sourcePath = fotoNovedadPath;
+
+    if (sourcePath == null || sourcePath.isEmpty) {
+      return null;
+    }
+
+    final File sourceFile = File(sourcePath);
+
+    if (!await sourceFile.exists()) {
+      throw StateError('La fotografía seleccionada ya no está disponible.');
+    }
+
+    final Directory supportDirectory = await getApplicationSupportDirectory();
+    final Directory photosDirectory = Directory(
+      '${supportDirectory.path}${Platform.pathSeparator}novelty_photos',
+    );
+
+    if (!await photosDirectory.exists()) {
+      await photosDirectory.create(recursive: true);
+    }
+
+    final String rawExtension = sourcePath.contains('.')
+        ? sourcePath.split('.').last.toLowerCase()
+        : 'jpg';
+    const Set<String> supportedExtensions = {
+      'jpg',
+      'jpeg',
+      'png',
+      'webp',
+      'heic',
+    };
+    final String extension = supportedExtensions.contains(rawExtension)
+        ? rawExtension
+        : 'jpg';
+    final String safePointId = widget.pointId.replaceAll(
+      RegExp(r'[^a-zA-Z0-9_-]+'),
+      '_',
+    );
+    final String destinationPath =
+        '${photosDirectory.path}${Platform.pathSeparator}'
+        'novelty_${safePointId}_${DateTime.now().microsecondsSinceEpoch}.'
+        '$extension';
+
+    final File savedFile = await sourceFile.copy(destinationPath);
+    return savedFile.path;
   }
 
   Future<void> confirmarRegistro() async {
@@ -43,6 +239,16 @@ class _PointConfirmationScreenState extends State<PointConfirmationScreen> {
     }
 
     final String observacion = observacionController.text.trim();
+
+    if (conNovedad && (categoriaNovedad == null || gravedadNovedad == null)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Selecciona la categoría y la gravedad de la novedad.'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
 
     if (conNovedad && observacion.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -68,11 +274,38 @@ class _PointConfirmationScreenState extends State<PointConfirmationScreen> {
       guardando = true;
     });
 
-    await RoundState.instance.completePoint(
-      pointId: widget.pointId,
-      hasNovelty: conNovedad,
-      observation: observacion,
-    );
+    try {
+      final String? savedPhotoPath = conNovedad
+          ? await _guardarFotoPermanente()
+          : null;
+
+      await RoundState.instance.completePoint(
+        pointId: widget.pointId,
+        hasNovelty: conNovedad,
+        observation: observacion,
+        noveltyCategory: categoriaNovedad,
+        noveltySeverity: gravedadNovedad,
+        noveltyPhotoPath: savedPhotoPath,
+      );
+    } catch (_) {
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        guardando = false;
+      });
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'No fue posible guardar la novedad o su fotografía. Intenta nuevamente.',
+          ),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
 
     if (!mounted) {
       return;
@@ -291,6 +524,9 @@ class _PointConfirmationScreenState extends State<PointConfirmationScreen> {
                                 : () {
                                     setState(() {
                                       conNovedad = false;
+                                      categoriaNovedad = null;
+                                      gravedadNovedad = null;
+                                      fotoNovedadPath = null;
                                     });
                                   },
                           ),
@@ -313,6 +549,191 @@ class _PointConfirmationScreenState extends State<PointConfirmationScreen> {
                         ),
                       ],
                     ),
+                    if (conNovedad) ...[
+                      const SizedBox(height: 26),
+                      const Text(
+                        'Detalle de la novedad',
+                        style: TextStyle(
+                          color: azulOscuro,
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      const SizedBox(height: 14),
+                      DropdownButtonFormField<String>(
+                        initialValue: categoriaNovedad,
+                        decoration: InputDecoration(
+                          labelText: 'Categoría',
+                          prefixIcon: const Icon(
+                            Icons.category_outlined,
+                            color: azulPrincipal,
+                          ),
+                          filled: true,
+                          fillColor: Colors.white,
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(15),
+                            borderSide: const BorderSide(
+                              color: Color(0xFFD9E2F0),
+                            ),
+                          ),
+                        ),
+                        items: categoriasNovedad.map((category) {
+                          return DropdownMenuItem(
+                            value: category,
+                            child: Text(category),
+                          );
+                        }).toList(),
+                        onChanged: guardando
+                            ? null
+                            : (value) {
+                                setState(() {
+                                  categoriaNovedad = value;
+                                });
+                              },
+                      ),
+                      const SizedBox(height: 14),
+                      DropdownButtonFormField<String>(
+                        initialValue: gravedadNovedad,
+                        decoration: InputDecoration(
+                          labelText: 'Gravedad',
+                          prefixIcon: const Icon(
+                            Icons.priority_high_rounded,
+                            color: naranja,
+                          ),
+                          filled: true,
+                          fillColor: Colors.white,
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(15),
+                            borderSide: const BorderSide(
+                              color: Color(0xFFD9E2F0),
+                            ),
+                          ),
+                        ),
+                        items: gravedadesNovedad.map((severity) {
+                          return DropdownMenuItem(
+                            value: severity,
+                            child: Text(severity),
+                          );
+                        }).toList(),
+                        onChanged: guardando
+                            ? null
+                            : (value) {
+                                setState(() {
+                                  gravedadNovedad = value;
+                                });
+                              },
+                      ),
+                      const SizedBox(height: 18),
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(15),
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(16),
+                          border: Border.all(color: const Color(0xFFD9E2F0)),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Row(
+                              children: [
+                                Icon(
+                                  Icons.photo_camera_outlined,
+                                  color: azulPrincipal,
+                                ),
+                                SizedBox(width: 9),
+                                Text(
+                                  'Fotografía (opcional)',
+                                  style: TextStyle(
+                                    color: azulOscuro,
+                                    fontSize: 15,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                              ],
+                            ),
+                            if (fotoNovedadPath != null) ...[
+                              const SizedBox(height: 13),
+                              ClipRRect(
+                                borderRadius: BorderRadius.circular(13),
+                                child: Image.file(
+                                  File(fotoNovedadPath!),
+                                  width: double.infinity,
+                                  height: 190,
+                                  fit: BoxFit.cover,
+                                  errorBuilder: (_, _, _) {
+                                    return Container(
+                                      height: 130,
+                                      alignment: Alignment.center,
+                                      color: const Color(0xFFF2F4F7),
+                                      child: const Text(
+                                        'No fue posible mostrar la fotografía.',
+                                      ),
+                                    );
+                                  },
+                                ),
+                              ),
+                              const SizedBox(height: 10),
+                              Row(
+                                children: [
+                                  Expanded(
+                                    child: OutlinedButton.icon(
+                                      onPressed: guardando
+                                          ? null
+                                          : _mostrarOpcionesFoto,
+                                      icon: const Icon(Icons.refresh_rounded),
+                                      label: const Text('Cambiar'),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 10),
+                                  Expanded(
+                                    child: TextButton.icon(
+                                      onPressed: guardando
+                                          ? null
+                                          : () {
+                                              setState(() {
+                                                fotoNovedadPath = null;
+                                              });
+                                            },
+                                      icon: const Icon(
+                                        Icons.delete_outline_rounded,
+                                      ),
+                                      label: const Text('Quitar'),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ] else ...[
+                              const SizedBox(height: 8),
+                              const Text(
+                                'Puedes tomar una foto o elegirla desde la galería.',
+                                style: TextStyle(
+                                  color: Color(0xFF667085),
+                                  fontSize: 12,
+                                ),
+                              ),
+                              const SizedBox(height: 11),
+                              SizedBox(
+                                width: double.infinity,
+                                child: OutlinedButton.icon(
+                                  onPressed: guardando
+                                      ? null
+                                      : _mostrarOpcionesFoto,
+                                  icon: const Icon(Icons.add_a_photo_outlined),
+                                  label: const Text('Agregar fotografía'),
+                                  style: OutlinedButton.styleFrom(
+                                    foregroundColor: azulPrincipal,
+                                    side: const BorderSide(
+                                      color: azulPrincipal,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ],
+                        ),
+                      ),
+                    ],
                     const SizedBox(height: 28),
                     Row(
                       children: [

@@ -25,6 +25,14 @@ class UserConfiguration {
       shift = '',
       role = '';
 
+  const UserConfiguration.initial()
+    : guardName = '',
+      identifier = '',
+      installationName = 'Instalación Principal',
+      company = 'LG Seguridad SpA',
+      shift = '',
+      role = '';
+
   bool get isComplete {
     return guardName.isNotEmpty &&
         identifier.isNotEmpty &&
@@ -84,7 +92,7 @@ class UserConfigurationStore extends ChangeNotifier {
   }
 
   void loadConfiguration(UserConfiguration? savedConfiguration) {
-    _configuration = savedConfiguration ?? const UserConfiguration.empty();
+    _configuration = savedConfiguration ?? const UserConfiguration.initial();
     _initialized = true;
     notifyListeners();
   }

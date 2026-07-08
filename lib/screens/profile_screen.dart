@@ -1,9 +1,10 @@
 import 'package:flutter/material.dart';
 
 import '../app_routes.dart';
+import '../auth_models.dart';
+import '../session_store.dart';
 import '../user_configuration.dart';
-import 'control_points_screen.dart';
-import 'edit_profile_screen.dart';
+import '../work_shifts.dart';
 
 class ProfileScreen extends StatelessWidget {
   const ProfileScreen({super.key});
@@ -13,6 +14,12 @@ class ProfileScreen extends StatelessWidget {
   static const Color azulPrincipal = Color(0xFF0866FF);
   static const Color fondo = Color(0xFFF4F7FB);
   static const Color rojo = Color(0xFFD92D20);
+
+  String _formatTime(DateTime value) {
+    final String hour = value.hour.toString().padLeft(2, '0');
+    final String minute = value.minute.toString().padLeft(2, '0');
+    return '$hour:$minute';
+  }
 
   void cerrarSesion(BuildContext context) {
     showDialog(
@@ -38,14 +45,31 @@ class ProfileScreen extends StatelessWidget {
               child: const Text('Cancelar'),
             ),
             ElevatedButton(
-              onPressed: () {
-                Navigator.pop(dialogContext);
+              onPressed: () async {
+                try {
+                  await SessionStore.instance.signOut();
 
-                Navigator.pushNamedAndRemoveUntil(
-                  context,
-                  AppRoutes.login,
-                  (route) => false,
-                );
+                  if (!dialogContext.mounted || !context.mounted) {
+                    return;
+                  }
+
+                  Navigator.pop(dialogContext);
+                  Navigator.pushNamedAndRemoveUntil(
+                    context,
+                    AppRoutes.login,
+                    (route) => false,
+                  );
+                } catch (_) {
+                  if (!dialogContext.mounted || !context.mounted) {
+                    return;
+                  }
+
+                  Navigator.pop(dialogContext);
+                  mostrarMensaje(
+                    context,
+                    'No fue posible cerrar la sesión. Intenta nuevamente.',
+                  );
+                }
               },
               style: ElevatedButton.styleFrom(
                 backgroundColor: rojo,
@@ -69,9 +93,9 @@ class ProfileScreen extends StatelessWidget {
   }
 
   Future<void> editarInformacion(BuildContext context) async {
-    final bool? saved = await Navigator.push<bool>(
+    final Object? saved = await Navigator.pushNamed(
       context,
-      MaterialPageRoute(builder: (_) => const EditProfileScreen()),
+      AppRoutes.editInstallation,
     );
 
     if (saved == true && context.mounted) {
@@ -80,22 +104,53 @@ class ProfileScreen extends StatelessWidget {
   }
 
   void abrirPuntosDeControl(BuildContext context) {
-    Navigator.push(
-      context,
-      MaterialPageRoute(builder: (_) => const ControlPointsScreen()),
-    );
+    Navigator.pushNamed(context, AppRoutes.controlPoints);
+  }
+
+  void abrirUsuarios(BuildContext context) {
+    Navigator.pushNamed(context, AppRoutes.users);
   }
 
   @override
   Widget build(BuildContext context) {
     final UserConfigurationStore configurationStore =
         UserConfigurationStore.instance;
+    final SessionStore sessionStore = SessionStore.instance;
+    final WorkShiftStore shiftStore = WorkShiftStore.instance;
 
     return AnimatedBuilder(
-      animation: configurationStore,
+      animation: Listenable.merge([
+        configurationStore,
+        sessionStore,
+        shiftStore,
+      ]),
       builder: (context, _) {
         final UserConfiguration configuration =
             configurationStore.configuration;
+        final AppUser? user = sessionStore.currentUser;
+        final String displayName = user?.displayName ?? 'Usuario';
+        final String jobTitle = user?.jobTitle ?? 'Cargo sin configurar';
+        final String installation =
+            user?.installationName ?? configuration.installationNameDisplay;
+        final String company = user?.company ?? configuration.companyDisplay;
+        final ShiftDefinition? assignedShift = user == null
+            ? null
+            : shiftStore.definitionForUser(user);
+        final WorkShiftRecord? activeShift = user == null
+            ? null
+            : shiftStore.activeForUser(user.id);
+        final String shift =
+            assignedShift?.displayName ?? user?.shift ?? 'Turno sin configurar';
+        final String identifier =
+            user?.identifier ?? configuration.identifierDisplay;
+        final String role = user?.role.label ?? 'Sin rol';
+        final bool canManageUsers = sessionStore.can(AppPermission.manageUsers);
+        final bool canManageInstallations = sessionStore.can(
+          AppPermission.manageInstallations,
+        );
+        final bool canManageControlPoints = sessionStore.can(
+          AppPermission.manageControlPoints,
+        );
 
         return Scaffold(
           backgroundColor: fondo,
@@ -182,7 +237,7 @@ class ProfileScreen extends StatelessWidget {
                               ),
                               const SizedBox(height: 16),
                               Text(
-                                configuration.guardNameDisplay,
+                                displayName,
                                 textAlign: TextAlign.center,
                                 style: const TextStyle(
                                   color: Colors.white,
@@ -192,7 +247,7 @@ class ProfileScreen extends StatelessWidget {
                               ),
                               const SizedBox(height: 5),
                               Text(
-                                configuration.roleDisplay,
+                                jobTitle,
                                 textAlign: TextAlign.center,
                                 style: const TextStyle(
                                   color: Colors.white70,
@@ -209,9 +264,9 @@ class ProfileScreen extends StatelessWidget {
                                   color: Colors.white.withValues(alpha: 0.14),
                                   borderRadius: BorderRadius.circular(20),
                                 ),
-                                child: const Text(
-                                  'Usuario activo',
-                                  style: TextStyle(
+                                child: Text(
+                                  role,
+                                  style: const TextStyle(
                                     color: Colors.white,
                                     fontSize: 12,
                                     fontWeight: FontWeight.w600,
@@ -241,54 +296,90 @@ class ProfileScreen extends StatelessWidget {
                               _ProfileInfoRow(
                                 icon: Icons.apartment_rounded,
                                 label: 'Instalación',
-                                value: configuration.installationNameDisplay,
+                                value: installation,
                               ),
                               const Divider(height: 28),
                               _ProfileInfoRow(
                                 icon: Icons.business_rounded,
                                 label: 'Empresa',
-                                value: configuration.companyDisplay,
+                                value: company,
                               ),
                               const Divider(height: 28),
                               _ProfileInfoRow(
                                 icon: Icons.access_time_rounded,
                                 label: 'Turno',
-                                value: configuration.shiftDisplay,
+                                value: shift,
                               ),
+                              if (user?.role == AppRole.guard) ...[
+                                const Divider(height: 28),
+                                _ProfileInfoRow(
+                                  icon: Icons.login_rounded,
+                                  label: 'Estado del turno',
+                                  value: activeShift == null
+                                      ? 'Turno no iniciado'
+                                      : 'Activo desde ${_formatTime(activeShift.actualStartedAt)}',
+                                ),
+                              ],
                               const Divider(height: 28),
                               _ProfileInfoRow(
                                 icon: Icons.badge_outlined,
                                 label: 'Identificador o RUT',
-                                value: configuration.identifierDisplay,
+                                value: identifier,
                               ),
                               const Divider(height: 28),
                               _ProfileInfoRow(
                                 icon: Icons.work_outline_rounded,
                                 label: 'Cargo',
-                                value: configuration.roleDisplay,
+                                value: jobTitle,
+                              ),
+                              const Divider(height: 28),
+                              _ProfileInfoRow(
+                                icon: Icons.admin_panel_settings_outlined,
+                                label: 'Rol de acceso',
+                                value: role,
                               ),
                             ],
                           ),
                         ),
-                        const SizedBox(height: 22),
-                        _ProfileOption(
-                          icon: Icons.edit_outlined,
-                          title: 'Editar información',
-                          subtitle:
-                              'Actualiza tus datos y los de la instalación',
-                          onTap: () {
-                            editarInformacion(context);
-                          },
-                        ),
-                        const SizedBox(height: 12),
-                        _ProfileOption(
-                          icon: Icons.location_on_outlined,
-                          title: 'Puntos de control',
-                          subtitle: 'Crea y administra los puntos de la ronda',
-                          onTap: () {
-                            abrirPuntosDeControl(context);
-                          },
-                        ),
+                        if (canManageUsers ||
+                            canManageInstallations ||
+                            canManageControlPoints) ...[
+                          const SizedBox(height: 22),
+                          if (canManageUsers) ...[
+                            _ProfileOption(
+                              icon: Icons.manage_accounts_outlined,
+                              title: 'Guardias y turnos',
+                              subtitle:
+                                  'Configura cuentas, roles y horarios locales',
+                              onTap: () {
+                                abrirUsuarios(context);
+                              },
+                            ),
+                            const SizedBox(height: 12),
+                          ],
+                          if (canManageInstallations) ...[
+                            _ProfileOption(
+                              icon: Icons.apartment_rounded,
+                              title: 'Configuración de instalación',
+                              subtitle:
+                                  'Actualiza los datos operativos y de empresa',
+                              onTap: () {
+                                editarInformacion(context);
+                              },
+                            ),
+                            const SizedBox(height: 12),
+                          ],
+                          if (canManageControlPoints)
+                            _ProfileOption(
+                              icon: Icons.location_on_outlined,
+                              title: 'Puntos de control',
+                              subtitle:
+                                  'Crea y administra los puntos de la ronda',
+                              onTap: () {
+                                abrirPuntosDeControl(context);
+                              },
+                            ),
+                        ],
                         const SizedBox(height: 12),
                         _ProfileOption(
                           icon: Icons.lock_outline_rounded,
@@ -317,13 +408,13 @@ class ProfileScreen extends StatelessWidget {
                         _ProfileOption(
                           icon: Icons.info_outline_rounded,
                           title: 'Acerca de RondaQR',
-                          subtitle: 'Versión 1.0.0',
+                          subtitle: 'Versión 1.1.1',
                           onTap: () {
                             showAboutDialog(
                               context: context,
                               applicationName: 'RondaQR',
-                              applicationVersion: '1.0.0',
-                              applicationLegalese: configuration.companyDisplay,
+                              applicationVersion: '1.1.1',
+                              applicationLegalese: company,
                               children: const [
                                 SizedBox(height: 12),
                                 Text(
@@ -358,7 +449,7 @@ class ProfileScreen extends StatelessWidget {
                         ),
                         const SizedBox(height: 22),
                         Text(
-                          'RondaQR · ${configuration.companyDisplay}',
+                          'RondaQR · $company',
                           textAlign: TextAlign.center,
                           style: const TextStyle(
                             color: Color(0xFF98A2B3),

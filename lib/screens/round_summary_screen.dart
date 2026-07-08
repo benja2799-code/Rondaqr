@@ -1,7 +1,12 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
+import 'package:rondaqr/auth_models.dart';
 import 'package:rondaqr/round_history.dart';
 import 'package:rondaqr/round_state.dart';
+import 'package:rondaqr/session_store.dart';
 import 'package:rondaqr/user_configuration.dart';
+import 'package:rondaqr/work_shifts.dart';
 
 class RoundSummaryScreen extends StatefulWidget {
   final String pointName;
@@ -174,16 +179,41 @@ class _RoundSummaryScreenState extends State<RoundSummaryScreen> {
         completed: point.completed,
         hasNovelty: point.hasNovelty,
         observation: point.observation,
+        noveltyCategory: point.noveltyCategory,
+        noveltySeverity: point.noveltySeverity,
+        noveltyPhotoPath: point.noveltyPhotoPath,
         completedAt: point.completedAt,
       );
     }).toList();
     final UserConfiguration configuration =
         UserConfigurationStore.instance.configuration;
+    final AppUser? user = SessionStore.instance.currentUser;
+    final RoundOperationalContext? roundContext = roundState.operationalContext;
+    final WorkShiftRecord? activeShift = user == null
+        ? null
+        : WorkShiftStore.instance.activeForUser(user.id);
 
     final RoundHistoryItem nuevaRonda = RoundHistoryItem(
       id: fechaInicio.microsecondsSinceEpoch.toString(),
-      guardName: configuration.guardNameDisplay,
-      installation: configuration.installationNameDisplay,
+      guardId: roundContext?.userId ?? user?.id ?? '',
+      guardName:
+          roundContext?.guardName ?? user?.displayName ?? 'Guardia sin nombre',
+      role: roundContext?.role ?? user?.role.label ?? 'Guardia',
+      installation:
+          roundContext?.installation ??
+          user?.installationName ??
+          configuration.installationNameDisplay,
+      shiftRecordId: roundContext?.shiftRecordId ?? activeShift?.id ?? '',
+      shiftId: roundContext?.shiftId ?? activeShift?.shiftId ?? '',
+      shiftName: roundContext?.shiftName ?? activeShift?.shiftName ?? '',
+      shiftScheduledStart:
+          roundContext?.shiftScheduledStart ??
+          activeShift?.scheduledStart ??
+          '',
+      shiftScheduledEnd:
+          roundContext?.shiftScheduledEnd ?? activeShift?.scheduledEnd ?? '',
+      shiftStartedAt:
+          roundContext?.shiftStartedAt ?? activeShift?.actualStartedAt,
       startedAt: fechaInicio,
       finishedAt: fechaTermino,
       totalPoints: roundState.totalPoints,
@@ -193,6 +223,13 @@ class _RoundSummaryScreenState extends State<RoundSummaryScreen> {
     );
 
     await RoundHistoryStore.instance.addRound(nuevaRonda);
+    if (nuevaRonda.guardId.isNotEmpty && nuevaRonda.shiftRecordId.isNotEmpty) {
+      await WorkShiftStore.instance.attachRoundToActiveShift(
+        userId: nuevaRonda.guardId,
+        roundId: nuevaRonda.id,
+        noveltyCount: nuevaRonda.noveltyCount,
+      );
+    }
     await roundState.resetRound();
 
     if (!context.mounted) {
@@ -254,12 +291,27 @@ class _RoundSummaryScreenState extends State<RoundSummaryScreen> {
     final RoundState roundState = RoundState.instance;
     final UserConfigurationStore configurationStore =
         UserConfigurationStore.instance;
+    final SessionStore sessionStore = SessionStore.instance;
 
     return AnimatedBuilder(
-      animation: Listenable.merge([roundState, configurationStore]),
+      animation: Listenable.merge([
+        roundState,
+        configurationStore,
+        sessionStore,
+      ]),
       builder: (context, _) {
         final UserConfiguration configuration =
             configurationStore.configuration;
+        final RoundOperationalContext? roundContext =
+            roundState.operationalContext;
+        final AppUser? user = sessionStore.currentUser;
+        final String installation =
+            roundContext?.installation ??
+            user?.installationName ??
+            configuration.installationNameDisplay;
+        final String guardName =
+            roundContext?.guardName ?? user?.displayName ?? 'Guardia';
+        final String shiftName = roundContext?.shiftName ?? 'Turno';
         final int completados = roundState.completedPoints;
 
         final int total = roundState.totalPoints;
@@ -363,7 +415,7 @@ class _RoundSummaryScreenState extends State<RoundSummaryScreen> {
                                         ),
                                         const SizedBox(height: 4),
                                         Text(
-                                          configuration.installationNameDisplay,
+                                          '$installation · $shiftName',
                                           maxLines: 1,
                                           overflow: TextOverflow.ellipsis,
                                           style: const TextStyle(
@@ -507,7 +559,7 @@ class _RoundSummaryScreenState extends State<RoundSummaryScreen> {
                                 ),
                               ),
                               Text(
-                                configuration.guardNameDisplay,
+                                guardName,
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
                                 style: TextStyle(
@@ -682,6 +734,13 @@ class _SummaryPointCard extends StatelessWidget {
               : 'Completado'
         : 'Pendiente';
 
+    final Color severityColor = switch (point.noveltySeverity) {
+      'Crítica' => const Color(0xFFD92D20),
+      'Alta' => const Color(0xFFF04438),
+      'Media' => naranja,
+      _ => const Color(0xFF16A36A),
+    };
+
     return Container(
       margin: const EdgeInsets.only(bottom: 11),
       padding: const EdgeInsets.all(14),
@@ -737,6 +796,27 @@ class _SummaryPointCard extends StatelessWidget {
                     ),
                   ),
                 ],
+                if (point.hasNovelty &&
+                    (point.noveltyCategory != null ||
+                        point.noveltySeverity != null)) ...[
+                  const SizedBox(height: 7),
+                  Wrap(
+                    spacing: 6,
+                    runSpacing: 5,
+                    children: [
+                      if (point.noveltyCategory != null)
+                        _NoveltyTag(
+                          text: point.noveltyCategory!,
+                          color: azulPrincipal,
+                        ),
+                      if (point.noveltySeverity != null)
+                        _NoveltyTag(
+                          text: point.noveltySeverity!,
+                          color: severityColor,
+                        ),
+                    ],
+                  ),
+                ],
                 if (point.observation.isNotEmpty) ...[
                   const SizedBox(height: 3),
                   Text(
@@ -746,6 +826,19 @@ class _SummaryPointCard extends StatelessWidget {
                     style: const TextStyle(
                       color: Color(0xFF98A2B3),
                       fontSize: 11,
+                    ),
+                  ),
+                ],
+                if (point.noveltyPhotoPath != null) ...[
+                  const SizedBox(height: 8),
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(10),
+                    child: Image.file(
+                      File(point.noveltyPhotoPath!),
+                      width: double.infinity,
+                      height: 105,
+                      fit: BoxFit.cover,
+                      errorBuilder: (_, _, _) => const SizedBox.shrink(),
                     ),
                   ),
                 ],
@@ -768,6 +861,32 @@ class _SummaryPointCard extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _NoveltyTag extends StatelessWidget {
+  final String text;
+  final Color color;
+
+  const _NoveltyTag({required this.text, required this.color});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.10),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Text(
+        text,
+        style: TextStyle(
+          color: color,
+          fontSize: 10,
+          fontWeight: FontWeight.bold,
+        ),
       ),
     );
   }

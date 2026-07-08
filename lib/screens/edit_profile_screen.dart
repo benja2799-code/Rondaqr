@@ -17,12 +17,8 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
 
   final GlobalKey<FormState> _formKey = GlobalKey<FormState>();
 
-  late final TextEditingController _guardNameController;
-  late final TextEditingController _identifierController;
   late final TextEditingController _installationController;
   late final TextEditingController _companyController;
-  late final TextEditingController _shiftController;
-  late final TextEditingController _roleController;
 
   bool _saving = false;
 
@@ -33,26 +29,16 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     final UserConfiguration configuration =
         UserConfigurationStore.instance.configuration;
 
-    _guardNameController = TextEditingController(text: configuration.guardName);
-    _identifierController = TextEditingController(
-      text: configuration.identifier,
-    );
     _installationController = TextEditingController(
       text: configuration.installationName,
     );
     _companyController = TextEditingController(text: configuration.company);
-    _shiftController = TextEditingController(text: configuration.shift);
-    _roleController = TextEditingController(text: configuration.role);
   }
 
   @override
   void dispose() {
-    _guardNameController.dispose();
-    _identifierController.dispose();
     _installationController.dispose();
     _companyController.dispose();
-    _shiftController.dispose();
-    _roleController.dispose();
     super.dispose();
   }
 
@@ -75,13 +61,15 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
       _saving = true;
     });
 
+    final UserConfiguration current =
+        UserConfigurationStore.instance.configuration;
     final UserConfiguration configuration = UserConfiguration(
-      guardName: _guardNameController.text.trim(),
-      identifier: _identifierController.text.trim(),
+      guardName: current.guardName,
+      identifier: current.identifier,
       installationName: _installationController.text.trim(),
       company: _companyController.text.trim(),
-      shift: _shiftController.text.trim(),
-      role: _roleController.text.trim(),
+      shift: current.shift,
+      role: current.role,
     );
 
     try {
@@ -175,7 +163,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                   ),
                   const Expanded(
                     child: Text(
-                      'Editar información',
+                      'Configurar instalación',
                       textAlign: TextAlign.center,
                       style: TextStyle(
                         color: Colors.white,
@@ -213,8 +201,8 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                             SizedBox(width: 12),
                             Expanded(
                               child: Text(
-                                'Estos datos aparecerán en las rondas, el '
-                                'historial y los reportes.',
+                                'La instalación y empresa se actualizarán en '
+                                'las cuentas, rondas nuevas y reportes.',
                                 style: TextStyle(
                                   color: azulOscuro,
                                   fontSize: 13,
@@ -242,18 +230,6 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                         child: Column(
                           children: [
                             _buildField(
-                              controller: _guardNameController,
-                              label: 'Nombre del guardia',
-                              icon: Icons.person_outline_rounded,
-                            ),
-                            const SizedBox(height: 16),
-                            _buildField(
-                              controller: _identifierController,
-                              label: 'Identificador o RUT',
-                              icon: Icons.badge_outlined,
-                            ),
-                            const SizedBox(height: 16),
-                            _buildField(
                               controller: _installationController,
                               label: 'Nombre de la instalación',
                               icon: Icons.apartment_rounded,
@@ -263,18 +239,6 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                               controller: _companyController,
                               label: 'Empresa',
                               icon: Icons.business_rounded,
-                            ),
-                            const SizedBox(height: 16),
-                            _buildField(
-                              controller: _shiftController,
-                              label: 'Horario o turno',
-                              icon: Icons.access_time_rounded,
-                            ),
-                            const SizedBox(height: 16),
-                            _buildField(
-                              controller: _roleController,
-                              label: 'Cargo',
-                              icon: Icons.work_outline_rounded,
                               textInputAction: TextInputAction.done,
                             ),
                           ],

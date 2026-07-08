@@ -1,5 +1,9 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
-import 'package:mobile_scanner/mobile_scanner.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:mobile_scanner/mobile_scanner.dart' as image_scanner;
+import 'package:qr_code_scanner_plus/qr_code_scanner_plus.dart' as live_scanner;
 
 import 'package:rondaqr/control_points.dart';
 import 'package:rondaqr/round_state.dart';
@@ -12,24 +16,78 @@ class QRScanScreen extends StatefulWidget {
   State<QRScanScreen> createState() => _QRScanScreenState();
 }
 
-class _QRScanScreenState extends State<QRScanScreen> {
+class _QRScanScreenState extends State<QRScanScreen>
+    with WidgetsBindingObserver {
   static const Color azulOscuro = Color(0xFF061B44);
   static const Color azulMedio = Color(0xFF073C85);
-  static const Color azulPrincipal = Color(0xFF0866FF);
   static const Color azulClaro = Color(0xFF48A7FF);
   static const Color verde = Color(0xFF16A36A);
 
-  final MobileScannerController _scannerController = MobileScannerController(
-    detectionSpeed: DetectionSpeed.noDuplicates,
-    formats: const [BarcodeFormat.qrCode],
-  );
+  final ImagePicker _imagePicker = ImagePicker();
+  final image_scanner.MobileScannerController _imageAnalyzer =
+      image_scanner.MobileScannerController(
+        autoStart: false,
+        formats: const [image_scanner.BarcodeFormat.qrCode],
+      );
+
+  late GlobalKey<State<StatefulWidget>> _qrViewKey;
+  live_scanner.QRViewController? _liveCameraController;
+  StreamSubscription<live_scanner.Barcode>? _scanSubscription;
 
   bool _processingPoint = false;
+  bool _analyzingPhoto = false;
+  bool _cameraInitializing = true;
+  bool _cameraReady = false;
+  bool _permissionGranted = false;
+  String? _cameraError;
+  int _scannerGeneration = 0;
+
+  GlobalKey<State<StatefulWidget>> _createQrViewKey() {
+    return GlobalKey<State<StatefulWidget>>(
+      debugLabel: 'RondaQRScanner$_scannerGeneration',
+    );
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _qrViewKey = _createQrViewKey();
+    _recoverInterruptedQrPhoto();
+  }
 
   @override
   void dispose() {
-    _scannerController.dispose();
+    WidgetsBinding.instance.removeObserver(this);
+    unawaited(_scanSubscription?.cancel());
+    unawaited(_imageAnalyzer.dispose());
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    final live_scanner.QRViewController? controller = _liveCameraController;
+
+    if (controller == null || controller.disposed) {
+      return;
+    }
+
+    if (state == AppLifecycleState.resumed) {
+      if (_permissionGranted &&
+          !_processingPoint &&
+          !_analyzingPhoto &&
+          !RoundState.instance.allPointsCompleted) {
+        unawaited(_resumeLiveCamera());
+      }
+      return;
+    }
+
+    if (state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.paused ||
+        state == AppLifecycleState.detached ||
+        state == AppLifecycleState.hidden) {
+      unawaited(_pauseLiveCamera());
+    }
   }
 
   Future<void> abrirConfirmacion(BuildContext context, RoundPoint point) async {
@@ -45,14 +103,10 @@ class _QRScanScreenState extends State<QRScanScreen> {
     }
 
     _processingPoint = true;
-
-    try {
-      await _scannerController.stop();
-    } on MobileScannerException {
-      // La navegación puede continuar aunque la cámara ya esté detenida.
-    }
+    await _pauseLiveCamera();
 
     if (!context.mounted) {
+      _processingPoint = false;
       return;
     }
 
@@ -71,16 +125,20 @@ class _QRScanScreenState extends State<QRScanScreen> {
     _processingPoint = false;
 
     if (!roundState.allPointsCompleted) {
-      await _startCamera(showReadyMessage: false);
+      await _resumeLiveCamera();
     }
   }
 
-  Future<void> _handleDetection(BarcodeCapture capture) async {
-    if (_processingPoint || capture.barcodes.isEmpty) {
+  Future<void> _handleLiveDetection(live_scanner.Barcode barcode) async {
+    await _processQrValue(barcode.code);
+  }
+
+  Future<void> _processQrValue(String? value) async {
+    if (_processingPoint) {
       return;
     }
 
-    final String? rawValue = capture.barcodes.first.rawValue?.trim();
+    final String? rawValue = value?.trim();
 
     if (rawValue == null || rawValue.isEmpty) {
       _showMessage(context, 'QR inválido. No fue posible leer su contenido.');
@@ -112,6 +170,106 @@ class _QRScanScreenState extends State<QRScanScreen> {
     await abrirConfirmacion(context, point);
   }
 
+  void _onQrViewCreated(live_scanner.QRViewController controller) {
+    _liveCameraController = controller;
+    unawaited(_scanSubscription?.cancel());
+    _scanSubscription = controller.scannedDataStream.listen(
+      _handleLiveDetection,
+      onError: (Object error, StackTrace stackTrace) {
+        debugPrint('Error leyendo QR en vivo: $error');
+        debugPrintStack(stackTrace: stackTrace);
+
+        if (mounted) {
+          setState(() {
+            _cameraInitializing = false;
+            _cameraReady = false;
+            _cameraError =
+                'No fue posible iniciar la cámara en vivo. Intenta nuevamente.';
+          });
+        }
+      },
+    );
+
+    if (mounted) {
+      setState(() {
+        _cameraInitializing = false;
+        _cameraReady = controller.hasPermissions;
+        if (controller.hasPermissions) {
+          _permissionGranted = true;
+          _cameraError = null;
+        }
+      });
+    }
+  }
+
+  void _onPermissionSet(
+    live_scanner.QRViewController controller,
+    bool granted,
+  ) {
+    if (!mounted || controller != _liveCameraController) {
+      return;
+    }
+
+    setState(() {
+      _cameraInitializing = false;
+      _permissionGranted = granted;
+      _cameraReady = granted;
+      _cameraError = granted
+          ? null
+          : 'Permiso de cámara rechazado. Habilítalo en los ajustes de la aplicación.';
+    });
+
+    if (granted) {
+      unawaited(_resumeLiveCamera());
+    }
+  }
+
+  Future<void> _pauseLiveCamera() async {
+    final live_scanner.QRViewController? controller = _liveCameraController;
+
+    if (controller == null || controller.disposed) {
+      return;
+    }
+
+    try {
+      await controller.pauseCamera();
+    } catch (error) {
+      debugPrint('No fue posible pausar la cámara QR: $error');
+    }
+  }
+
+  Future<void> _resumeLiveCamera() async {
+    final live_scanner.QRViewController? controller = _liveCameraController;
+
+    if (controller == null || controller.disposed || !_permissionGranted) {
+      return;
+    }
+
+    try {
+      await controller.resumeCamera();
+
+      if (mounted) {
+        setState(() {
+          _cameraInitializing = false;
+          _cameraReady = true;
+          _cameraError = null;
+        });
+      }
+    } catch (error, stackTrace) {
+      debugPrint('No fue posible reanudar la cámara QR: $error');
+      debugPrintStack(stackTrace: stackTrace);
+
+      if (mounted) {
+        setState(() {
+          _cameraInitializing = false;
+          _cameraReady = false;
+          _cameraError =
+              'No fue posible abrir la cámara. Toca “Reintentar cámara”.';
+        });
+      }
+    }
+  }
+
   void _showMessage(BuildContext context, String message) {
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
@@ -120,84 +278,114 @@ class _QRScanScreenState extends State<QRScanScreen> {
       );
   }
 
-  void mostrarSelectorPuntos(BuildContext context) {
-    final RoundState roundState = RoundState.instance;
+  Future<void> _recoverInterruptedQrPhoto() async {
+    try {
+      final LostDataResponse response = await _imagePicker.retrieveLostData();
 
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (bottomSheetContext) {
-        return AnimatedBuilder(
-          animation: roundState,
-          builder: (context, _) {
-            return Container(
-              padding: const EdgeInsets.fromLTRB(20, 18, 20, 28),
-              decoration: const BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-              ),
-              child: SafeArea(
-                top: false,
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Container(
-                      width: 48,
-                      height: 5,
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFD0D5DD),
-                        borderRadius: BorderRadius.circular(20),
-                      ),
-                    ),
-                    const SizedBox(height: 20),
-                    const Text(
-                      'Simular punto QR',
-                      style: TextStyle(
-                        color: azulOscuro,
-                        fontSize: 21,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                    const SizedBox(height: 6),
-                    const Text(
-                      'Selecciona el punto que deseas registrar.',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(color: Color(0xFF667085), fontSize: 14),
-                    ),
-                    const SizedBox(height: 20),
-                    ...roundState.points.map((point) {
-                      return _PointSelectorCard(
-                        name: point.name,
-                        icon: point.icon,
-                        completed: point.completed,
-                        onTap: () {
-                          if (point.completed) {
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              SnackBar(
-                                content: Text(
-                                  '${point.name} ya fue completado.',
-                                ),
-                                behavior: SnackBarBehavior.floating,
-                              ),
-                            );
-                            return;
-                          }
+      if (response.isEmpty || !mounted) {
+        return;
+      }
 
-                          Navigator.pop(bottomSheetContext);
+      final XFile? recoveredImage = response.files?.firstOrNull;
 
-                          abrirConfirmacion(context, point);
-                        },
-                      );
-                    }),
-                  ],
-                ),
-              ),
-            );
-          },
+      if (recoveredImage != null) {
+        await _analyzeQrPhoto(recoveredImage);
+      }
+    } catch (error) {
+      debugPrint('No fue posible recuperar la foto del QR: $error');
+    }
+  }
+
+  Future<void> _scanWithSystemCamera() async {
+    if (_analyzingPhoto || _processingPoint) {
+      return;
+    }
+
+    setState(() {
+      _analyzingPhoto = true;
+    });
+
+    try {
+      await _pauseLiveCamera();
+      await Future<void>.delayed(const Duration(milliseconds: 250));
+
+      final XFile? photo = await _imagePicker.pickImage(
+        source: ImageSource.camera,
+        preferredCameraDevice: CameraDevice.rear,
+        maxWidth: 2000,
+        maxHeight: 2000,
+        imageQuality: 90,
+        requestFullMetadata: false,
+      );
+
+      if (photo == null || !mounted) {
+        return;
+      }
+
+      await _analyzeQrPhoto(photo);
+    } catch (error, stackTrace) {
+      debugPrint('Error usando la cámara del teléfono: $error');
+      debugPrintStack(stackTrace: stackTrace);
+
+      if (mounted) {
+        _showMessage(
+          context,
+          'No fue posible tomar la foto. Revisa el permiso de cámara.',
         );
-      },
-    );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _analyzingPhoto = false;
+        });
+
+        if (!_processingPoint && !RoundState.instance.allPointsCompleted) {
+          await _resumeLiveCamera();
+        }
+      }
+    }
+  }
+
+  Future<void> _analyzeQrPhoto(XFile photo) async {
+    try {
+      final image_scanner.BarcodeCapture? capture = await _imageAnalyzer
+          .analyzeImage(
+            photo.path,
+            formats: const [image_scanner.BarcodeFormat.qrCode],
+          );
+
+      if (!mounted) {
+        return;
+      }
+
+      if (capture == null || capture.barcodes.isEmpty) {
+        _showMessage(
+          context,
+          'No se encontró un código QR legible en la foto. '
+          'Acércate al código e intenta nuevamente.',
+        );
+        return;
+      }
+
+      await _processQrValue(
+        capture.barcodes
+            .map((image_scanner.Barcode barcode) => barcode.rawValue)
+            .firstWhere(
+              (String? value) => value != null && value.trim().isNotEmpty,
+              orElse: () => null,
+            ),
+      );
+    } catch (error, stackTrace) {
+      debugPrint('No fue posible analizar la foto del QR: $error');
+      debugPrintStack(stackTrace: stackTrace);
+
+      if (mounted) {
+        _showMessage(
+          context,
+          'No fue posible leer el QR de la foto. Intenta nuevamente.',
+        );
+      }
+    }
   }
 
   void mostrarAyuda(BuildContext context) {
@@ -212,7 +400,7 @@ class _QRScanScreenState extends State<QRScanScreen> {
           content: const Text(
             'Ubica el código QR dentro del recuadro. '
             'La aplicación solicitará permiso para usar la cámara. '
-            'También puedes usar "Simular QR escaneado" durante las pruebas.',
+            'La lectura es automática y no guarda una fotografía del código.',
           ),
           actions: [
             TextButton(
@@ -227,48 +415,28 @@ class _QRScanScreenState extends State<QRScanScreen> {
     );
   }
 
-  Future<void> escanearAhora(BuildContext context) async {
-    if (_scannerController.value.isRunning) {
-      _showMessage(
-        context,
-        'La cámara está activa. Ubica el QR dentro del recuadro.',
-      );
+  Future<void> _retryCamera() async {
+    await _pauseLiveCamera();
+    await _scanSubscription?.cancel();
+
+    if (!mounted) {
       return;
     }
 
-    await _startCamera(showReadyMessage: true);
+    setState(() {
+      _scannerGeneration++;
+      _qrViewKey = _createQrViewKey();
+      _liveCameraController = null;
+      _scanSubscription = null;
+      _cameraInitializing = true;
+      _cameraReady = false;
+      _cameraError = null;
+    });
+
+    _showMessage(context, 'Reiniciando cámara...');
   }
 
-  Future<void> _startCamera({required bool showReadyMessage}) async {
-    try {
-      await _scannerController.start();
-
-      if (showReadyMessage && mounted) {
-        _showMessage(context, 'Cámara lista. Ubica el QR dentro del recuadro.');
-      }
-    } on MobileScannerException catch (error) {
-      if (!mounted) {
-        return;
-      }
-
-      _showMessage(context, _cameraErrorMessage(error));
-    }
-  }
-
-  String _cameraErrorMessage(MobileScannerException error) {
-    switch (error.errorCode) {
-      case MobileScannerErrorCode.permissionDenied:
-        return 'Permiso de cámara rechazado. '
-            'Habilítalo en los ajustes de la aplicación.';
-      case MobileScannerErrorCode.unsupported:
-        return 'La cámara no está disponible en este dispositivo.';
-      default:
-        return 'No fue posible iniciar la cámara. '
-            'Verifica que no esté siendo usada por otra aplicación.';
-    }
-  }
-
-  Widget _buildCameraError(BuildContext context, MobileScannerException error) {
+  Widget _buildCameraError(BuildContext context) {
     return Container(
       color: azulOscuro,
       alignment: Alignment.center,
@@ -283,7 +451,8 @@ class _QRScanScreenState extends State<QRScanScreen> {
           ),
           const SizedBox(height: 10),
           Text(
-            _cameraErrorMessage(error),
+            _cameraError ??
+                'No fue posible abrir la cámara. Intenta nuevamente.',
             textAlign: TextAlign.center,
             style: const TextStyle(
               color: Colors.white,
@@ -291,13 +460,34 @@ class _QRScanScreenState extends State<QRScanScreen> {
               height: 1.35,
             ),
           ),
-          const SizedBox(height: 10),
-          TextButton(
-            onPressed: () {
-              escanearAhora(context);
-            },
-            child: const Text('Reintentar', style: TextStyle(color: azulClaro)),
-          ),
+          const SizedBox(height: 14),
+          if (_analyzingPhoto)
+            const SizedBox(
+              width: 24,
+              height: 24,
+              child: CircularProgressIndicator(
+                color: Colors.white,
+                strokeWidth: 2.5,
+              ),
+            )
+          else ...[
+            ElevatedButton.icon(
+              onPressed: _scanWithSystemCamera,
+              icon: const Icon(Icons.photo_camera_outlined),
+              label: const Text('Usar cámara del teléfono'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: azulClaro,
+                foregroundColor: azulOscuro,
+              ),
+            ),
+            TextButton(
+              onPressed: _retryCamera,
+              child: const Text(
+                'Reintentar cámara',
+                style: TextStyle(color: azulClaro),
+              ),
+            ),
+          ],
         ],
       ),
     );
@@ -464,23 +654,38 @@ class _QRScanScreenState extends State<QRScanScreen> {
                                             borderRadius: BorderRadius.circular(
                                               28,
                                             ),
-                                            child: MobileScanner(
-                                              controller: _scannerController,
-                                              fit: BoxFit.cover,
-                                              onDetect: _handleDetection,
-                                              errorBuilder: _buildCameraError,
-                                              placeholderBuilder: (context) {
-                                                return const ColoredBox(
-                                                  color: azulOscuro,
-                                                  child: Center(
-                                                    child: Icon(
-                                                      Icons.qr_code_2_rounded,
-                                                      size: 112,
-                                                      color: Colors.white,
+                                            child: Stack(
+                                              fit: StackFit.expand,
+                                              children: [
+                                                live_scanner.QRView(
+                                                  key: _qrViewKey,
+                                                  onQRViewCreated:
+                                                      _onQrViewCreated,
+                                                  onPermissionSet:
+                                                      _onPermissionSet,
+                                                  cameraFacing: live_scanner
+                                                      .CameraFacing
+                                                      .back,
+                                                  formatsAllowed: const [
+                                                    live_scanner
+                                                        .BarcodeFormat
+                                                        .qrcode,
+                                                  ],
+                                                ),
+                                                if (_cameraInitializing)
+                                                  const ColoredBox(
+                                                    color: azulOscuro,
+                                                    child: Center(
+                                                      child:
+                                                          CircularProgressIndicator(
+                                                            color: azulClaro,
+                                                            strokeWidth: 2.5,
+                                                          ),
                                                     ),
                                                   ),
-                                                );
-                                              },
+                                                if (_cameraError != null)
+                                                  _buildCameraError(context),
+                                              ],
                                             ),
                                           ),
                                         ),
@@ -539,7 +744,7 @@ class _QRScanScreenState extends State<QRScanScreen> {
                                       child: Text(
                                         completed == total
                                             ? 'Todos los puntos ya fueron registrados.'
-                                            : 'Escanea el QR del punto o usa la simulación para pruebas.',
+                                            : 'La cámara leerá automáticamente el QR real del punto.',
                                         style: TextStyle(
                                           color: Colors.white.withValues(
                                             alpha: 0.80,
@@ -552,68 +757,35 @@ class _QRScanScreenState extends State<QRScanScreen> {
                                   ],
                                 ),
                               ),
-                              const SizedBox(height: 28),
-                              SizedBox(
-                                width: double.infinity,
-                                height: 56,
-                                child: ElevatedButton.icon(
-                                  onPressed: completed == total
-                                      ? null
-                                      : () {
-                                          escanearAhora(context);
-                                        },
-                                  icon: const Icon(
-                                    Icons.qr_code_scanner_rounded,
-                                  ),
-                                  label: const Text('Escanear ahora'),
-                                  style: ElevatedButton.styleFrom(
-                                    backgroundColor: azulPrincipal,
-                                    foregroundColor: Colors.white,
-                                    disabledBackgroundColor: Colors.white24,
-                                    disabledForegroundColor: Colors.white60,
-                                    elevation: 9,
-                                    shadowColor: azulPrincipal.withValues(
-                                      alpha: 0.35,
-                                    ),
-                                    shape: RoundedRectangleBorder(
-                                      borderRadius: BorderRadius.circular(15),
-                                    ),
-                                    textStyle: const TextStyle(
-                                      fontSize: 16,
-                                      fontWeight: FontWeight.bold,
-                                    ),
-                                  ),
-                                ),
-                              ),
                               const SizedBox(height: 14),
                               SizedBox(
                                 width: double.infinity,
                                 height: 54,
                                 child: OutlinedButton.icon(
-                                  onPressed: completed == total
+                                  onPressed:
+                                      completed == total || _analyzingPhoto
                                       ? null
-                                      : () {
-                                          mostrarSelectorPuntos(context);
-                                        },
-                                  icon: Icon(
-                                    completed == total
-                                        ? Icons.check_circle_rounded
-                                        : Icons.developer_mode_rounded,
-                                  ),
+                                      : _scanWithSystemCamera,
+                                  icon: _analyzingPhoto
+                                      ? const SizedBox(
+                                          width: 19,
+                                          height: 19,
+                                          child: CircularProgressIndicator(
+                                            strokeWidth: 2.3,
+                                            color: Colors.white,
+                                          ),
+                                        )
+                                      : const Icon(Icons.photo_camera_outlined),
                                   label: Text(
-                                    completed == total
-                                        ? 'Todos los puntos completados'
-                                        : 'Simular QR escaneado',
+                                    _analyzingPhoto
+                                        ? 'Leyendo QR...'
+                                        : 'Escanear tomando una foto',
                                   ),
                                   style: OutlinedButton.styleFrom(
-                                    foregroundColor: completed == total
-                                        ? verde
-                                        : Colors.white,
-                                    disabledForegroundColor: verde,
+                                    foregroundColor: Colors.white,
+                                    disabledForegroundColor: Colors.white60,
                                     side: BorderSide(
-                                      color: completed == total
-                                          ? verde
-                                          : azulClaro.withValues(alpha: 0.75),
+                                      color: azulClaro.withValues(alpha: 0.75),
                                       width: 1.3,
                                     ),
                                     shape: RoundedRectangleBorder(
@@ -627,12 +799,51 @@ class _QRScanScreenState extends State<QRScanScreen> {
                                 ),
                               ),
                               const SizedBox(height: 24),
-                              Text(
-                                'Modo de desarrollo',
-                                style: TextStyle(
-                                  color: Colors.white.withValues(alpha: 0.45),
-                                  fontSize: 12,
-                                ),
+                              Builder(
+                                builder: (context) {
+                                  final bool hasError = _cameraError != null;
+                                  final String status = completed == total
+                                      ? 'Ronda completada'
+                                      : _analyzingPhoto
+                                      ? 'Analizando fotografía...'
+                                      : hasError
+                                      ? 'Cámara no disponible · toca Reintentar cámara'
+                                      : _cameraInitializing
+                                      ? 'Iniciando cámara...'
+                                      : _cameraReady
+                                      ? 'Cámara activa · lectura automática'
+                                      : 'Preparando cámara...';
+                                  final Color statusColor = hasError
+                                      ? azulClaro
+                                      : verde;
+
+                                  return Row(
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    children: [
+                                      Icon(
+                                        hasError
+                                            ? Icons.info_outline_rounded
+                                            : Icons.camera_alt_outlined,
+                                        color: statusColor,
+                                        size: 18,
+                                      ),
+                                      const SizedBox(width: 7),
+                                      Flexible(
+                                        child: Text(
+                                          status,
+                                          textAlign: TextAlign.center,
+                                          style: TextStyle(
+                                            color: Colors.white.withValues(
+                                              alpha: 0.78,
+                                            ),
+                                            fontSize: 12,
+                                            fontWeight: FontWeight.w600,
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  );
+                                },
                               ),
                             ],
                           ),
@@ -646,97 +857,6 @@ class _QRScanScreenState extends State<QRScanScreen> {
           ),
         );
       },
-    );
-  }
-}
-
-class _PointSelectorCard extends StatelessWidget {
-  final String name;
-  final IconData icon;
-  final bool completed;
-  final VoidCallback onTap;
-
-  const _PointSelectorCard({
-    required this.name,
-    required this.icon,
-    required this.completed,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    const Color azulOscuro = Color(0xFF061B44);
-    const Color azulPrincipal = Color(0xFF0866FF);
-    const Color verde = Color(0xFF16A36A);
-
-    return Container(
-      margin: const EdgeInsets.only(bottom: 12),
-      child: Material(
-        color: completed ? const Color(0xFFF3FBF7) : Colors.white,
-        borderRadius: BorderRadius.circular(16),
-        elevation: 1,
-        shadowColor: Colors.black.withValues(alpha: 0.06),
-        child: InkWell(
-          onTap: onTap,
-          borderRadius: BorderRadius.circular(16),
-          child: Padding(
-            padding: const EdgeInsets.all(14),
-            child: Row(
-              children: [
-                Container(
-                  width: 44,
-                  height: 44,
-                  decoration: BoxDecoration(
-                    color: completed
-                        ? const Color(0xFFE8F8F0)
-                        : const Color(0xFFEAF2FF),
-                    borderRadius: BorderRadius.circular(13),
-                  ),
-                  child: Icon(
-                    completed ? Icons.check_circle_rounded : icon,
-                    color: completed ? verde : azulPrincipal,
-                  ),
-                ),
-                const SizedBox(width: 13),
-                Expanded(
-                  child: Text(
-                    name,
-                    style: const TextStyle(
-                      color: azulOscuro,
-                      fontSize: 15,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                ),
-                if (completed)
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 9,
-                      vertical: 6,
-                    ),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFFE8F8F0),
-                      borderRadius: BorderRadius.circular(18),
-                    ),
-                    child: const Text(
-                      'Completado',
-                      style: TextStyle(
-                        color: verde,
-                        fontSize: 11,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                  )
-                else
-                  const Icon(
-                    Icons.chevron_right_rounded,
-                    color: Color(0xFF98A2B3),
-                  ),
-              ],
-            ),
-          ),
-        ),
-      ),
     );
   }
 }

@@ -1,9 +1,20 @@
-import 'package:flutter/material.dart';
-import 'package:rondaqr/round_history.dart';
+import 'dart:io';
 
-class HistoryScreen extends StatelessWidget {
+import 'package:flutter/material.dart';
+import 'package:rondaqr/auth_models.dart';
+import 'package:rondaqr/round_history.dart';
+import 'package:rondaqr/round_history_filters.dart';
+import 'package:rondaqr/session_store.dart';
+import 'package:rondaqr/widgets/round_history_filters.dart';
+
+class HistoryScreen extends StatefulWidget {
   const HistoryScreen({super.key});
 
+  @override
+  State<HistoryScreen> createState() => _HistoryScreenState();
+}
+
+class _HistoryScreenState extends State<HistoryScreen> {
   static const Color azulOscuro = Color(0xFF061B44);
   static const Color azulMedio = Color(0xFF073C85);
   static const Color azulPrincipal = Color(0xFF0866FF);
@@ -11,6 +22,41 @@ class HistoryScreen extends StatelessWidget {
   static const Color verde = Color(0xFF16A36A);
   static const Color naranja = Color(0xFFF59E0B);
   static const Color rojo = Color(0xFFD92D20);
+
+  final TextEditingController _searchController = TextEditingController();
+  RoundHistoryFilters _filters = RoundHistoryFilters();
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  void _clearFilters() {
+    _searchController.clear();
+
+    setState(() {
+      _filters.clear();
+    });
+  }
+
+  Future<void> _openFilters(List<RoundHistoryItem> rounds) async {
+    final RoundHistoryFilters? selected = await showRoundHistoryFilters(
+      context: context,
+      currentFilters: _filters,
+      rounds: rounds,
+    );
+
+    if (selected == null || !mounted) {
+      return;
+    }
+
+    _searchController.text = selected.searchText;
+
+    setState(() {
+      _filters = selected;
+    });
+  }
 
   String formatearFecha(DateTime fecha) {
     final String dia = fecha.day.toString().padLeft(2, '0');
@@ -188,6 +234,20 @@ class HistoryScreen extends StatelessWidget {
                               ),
                               const Divider(height: 28),
                               _DetailRow(
+                                icon: Icons.schedule_rounded,
+                                label: 'Turno',
+                                value: ronda.shiftDisplay,
+                              ),
+                              if (ronda.shiftStartedAt != null) ...[
+                                const Divider(height: 28),
+                                _DetailRow(
+                                  icon: Icons.login_rounded,
+                                  label: 'Ingreso al turno',
+                                  value: formatearHora(ronda.shiftStartedAt!),
+                                ),
+                              ],
+                              const Divider(height: 28),
+                              _DetailRow(
                                 icon: Icons.play_arrow_rounded,
                                 label: 'Inicio',
                                 value: formatearHora(ronda.startedAt),
@@ -324,11 +384,31 @@ class HistoryScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final RoundHistoryStore historyStore = RoundHistoryStore.instance;
+    final SessionStore sessionStore = SessionStore.instance;
 
     return AnimatedBuilder(
-      animation: historyStore,
+      animation: Listenable.merge([historyStore, sessionStore]),
       builder: (context, _) {
-        final List<RoundHistoryItem> rondas = historyStore.rounds;
+        final AppUser? user = sessionStore.currentUser;
+        final bool isAdministrator = user?.role == AppRole.administrator;
+        final List<RoundHistoryItem> allRounds = historyStore.rounds.where((
+          round,
+        ) {
+          if (isAdministrator) {
+            return true;
+          }
+          return user != null &&
+              (round.guardId == user.id ||
+                  (round.guardId.isEmpty &&
+                      round.guardName == user.displayName));
+        }).toList();
+        final List<RoundHistoryItem> rondas = _filters.apply(allRounds);
+        final int completedRounds = rondas
+            .where((round) => round.completed)
+            .length;
+        final int roundsWithNovelty = rondas
+            .where((round) => round.hasNovelty)
+            .length;
 
         return Scaffold(
           backgroundColor: fondo,
@@ -367,135 +447,160 @@ class HistoryScreen extends StatelessWidget {
                           ),
                         ),
                       ),
-                      IconButton(
-                        onPressed: () {
-                          confirmarEliminarHistorial(context, historyStore);
-                        },
-                        icon: const Icon(
-                          Icons.delete_outline_rounded,
-                          color: Colors.white,
-                        ),
-                      ),
+                      if (isAdministrator)
+                        IconButton(
+                          onPressed: () {
+                            confirmarEliminarHistorial(context, historyStore);
+                          },
+                          icon: const Icon(
+                            Icons.delete_outline_rounded,
+                            color: Colors.white,
+                          ),
+                        )
+                      else
+                        const SizedBox(width: 48),
                     ],
                   ),
                 ),
                 Expanded(
-                  child: rondas.isEmpty
+                  child: allRounds.isEmpty
                       ? const _EmptyHistory()
                       : ListView(
                           padding: const EdgeInsets.all(20),
                           children: [
-                            Container(
-                              width: double.infinity,
-                              padding: const EdgeInsets.all(18),
-                              decoration: BoxDecoration(
-                                gradient: const LinearGradient(
-                                  colors: [Color(0xFF0F6FFF), azulMedio],
-                                  begin: Alignment.topLeft,
-                                  end: Alignment.bottomRight,
-                                ),
-                                borderRadius: BorderRadius.circular(20),
-                                boxShadow: [
-                                  BoxShadow(
-                                    color: azulPrincipal.withValues(
-                                      alpha: 0.22,
-                                    ),
-                                    blurRadius: 18,
-                                    offset: const Offset(0, 10),
+                            RoundHistoryFilterPanel(
+                              searchController: _searchController,
+                              resultCount: rondas.length,
+                              activeFilterCount: _filters.activeCount,
+                              hasActiveFilters: _filters.isActive,
+                              onSearchChanged: (value) {
+                                setState(() {
+                                  _filters.searchText = value;
+                                });
+                              },
+                              onOpenFilters: () => _openFilters(allRounds),
+                              onClearFilters: _clearFilters,
+                            ),
+                            const SizedBox(height: 18),
+                            if (rondas.isEmpty)
+                              NoRoundFilterResults(
+                                onClearFilters: _clearFilters,
+                              )
+                            else ...[
+                              Container(
+                                width: double.infinity,
+                                padding: const EdgeInsets.all(18),
+                                decoration: BoxDecoration(
+                                  gradient: const LinearGradient(
+                                    colors: [Color(0xFF0F6FFF), azulMedio],
+                                    begin: Alignment.topLeft,
+                                    end: Alignment.bottomRight,
                                   ),
-                                ],
+                                  borderRadius: BorderRadius.circular(20),
+                                  boxShadow: [
+                                    BoxShadow(
+                                      color: azulPrincipal.withValues(
+                                        alpha: 0.22,
+                                      ),
+                                      blurRadius: 18,
+                                      offset: const Offset(0, 10),
+                                    ),
+                                  ],
+                                ),
+                                child: Row(
+                                  children: [
+                                    const Icon(
+                                      Icons.history_rounded,
+                                      color: Colors.white,
+                                      size: 38,
+                                    ),
+                                    const SizedBox(width: 14),
+                                    Expanded(
+                                      child: Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          const Text(
+                                            'Historial de actividad',
+                                            style: TextStyle(
+                                              color: Colors.white,
+                                              fontSize: 19,
+                                              fontWeight: FontWeight.bold,
+                                            ),
+                                          ),
+                                          const SizedBox(height: 5),
+                                          Text(
+                                            '${rondas.length} ${rondas.length == 1 ? 'ronda encontrada' : 'rondas encontradas'}',
+                                            style: const TextStyle(
+                                              color: Colors.white70,
+                                              fontSize: 14,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ],
+                                ),
                               ),
-                              child: Row(
+                              const SizedBox(height: 22),
+                              Row(
                                 children: [
-                                  const Icon(
-                                    Icons.history_rounded,
-                                    color: Colors.white,
-                                    size: 38,
-                                  ),
-                                  const SizedBox(width: 14),
                                   Expanded(
-                                    child: Column(
-                                      crossAxisAlignment:
-                                          CrossAxisAlignment.start,
-                                      children: [
-                                        const Text(
-                                          'Historial de actividad',
-                                          style: TextStyle(
-                                            color: Colors.white,
-                                            fontSize: 19,
-                                            fontWeight: FontWeight.bold,
-                                          ),
-                                        ),
-                                        const SizedBox(height: 5),
-                                        Text(
-                                          '${rondas.length} rondas guardadas',
-                                          style: const TextStyle(
-                                            color: Colors.white70,
-                                            fontSize: 14,
-                                          ),
-                                        ),
-                                      ],
+                                    child: _HistoryStat(
+                                      value: '${rondas.length}',
+                                      label: 'Total',
+                                      color: azulPrincipal,
+                                      backgroundColor: const Color(0xFFEAF2FF),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 10),
+                                  Expanded(
+                                    child: _HistoryStat(
+                                      value: '$completedRounds',
+                                      label: 'Completadas',
+                                      color: verde,
+                                      backgroundColor: const Color(0xFFE8F8F0),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 10),
+                                  Expanded(
+                                    child: _HistoryStat(
+                                      value: '$roundsWithNovelty',
+                                      label: 'Novedades',
+                                      color: naranja,
+                                      backgroundColor: const Color(0xFFFFF4E5),
                                     ),
                                   ),
                                 ],
                               ),
-                            ),
-                            const SizedBox(height: 22),
-                            Row(
-                              children: [
-                                Expanded(
-                                  child: _HistoryStat(
-                                    value: '${historyStore.totalRounds}',
-                                    label: 'Total',
-                                    color: azulPrincipal,
-                                    backgroundColor: const Color(0xFFEAF2FF),
-                                  ),
+                              const SizedBox(height: 24),
+                              const Text(
+                                'Rondas recientes',
+                                style: TextStyle(
+                                  color: azulOscuro,
+                                  fontSize: 20,
+                                  fontWeight: FontWeight.bold,
                                 ),
-                                const SizedBox(width: 10),
-                                Expanded(
-                                  child: _HistoryStat(
-                                    value: '${historyStore.completedRounds}',
-                                    label: 'Completadas',
-                                    color: verde,
-                                    backgroundColor: const Color(0xFFE8F8F0),
-                                  ),
-                                ),
-                                const SizedBox(width: 10),
-                                Expanded(
-                                  child: _HistoryStat(
-                                    value: '${historyStore.roundsWithNovelty}',
-                                    label: 'Novedades',
-                                    color: naranja,
-                                    backgroundColor: const Color(0xFFFFF4E5),
-                                  ),
-                                ),
-                              ],
-                            ),
-                            const SizedBox(height: 24),
-                            const Text(
-                              'Rondas recientes',
-                              style: TextStyle(
-                                color: azulOscuro,
-                                fontSize: 20,
-                                fontWeight: FontWeight.bold,
                               ),
-                            ),
-                            const SizedBox(height: 14),
-                            ...rondas.map((ronda) {
-                              return _HistoryCard(
-                                ronda: ronda,
-                                formattedDate: formatearFecha(ronda.finishedAt),
-                                formattedSchedule:
-                                    '${formatearHora(ronda.startedAt)} - '
-                                    '${formatearHora(ronda.finishedAt)}',
-                                statusColor: obtenerColorEstado(ronda),
-                                statusBackground: obtenerFondoEstado(ronda),
-                                statusIcon: obtenerIconoEstado(ronda),
-                                onTap: () {
-                                  mostrarDetalle(context, ronda);
-                                },
-                              );
-                            }),
+                              const SizedBox(height: 14),
+                              ...rondas.map((ronda) {
+                                return _HistoryCard(
+                                  ronda: ronda,
+                                  formattedDate: formatearFecha(
+                                    ronda.finishedAt,
+                                  ),
+                                  formattedSchedule:
+                                      '${formatearHora(ronda.startedAt)} - '
+                                      '${formatearHora(ronda.finishedAt)}',
+                                  statusColor: obtenerColorEstado(ronda),
+                                  statusBackground: obtenerFondoEstado(ronda),
+                                  statusIcon: obtenerIconoEstado(ronda),
+                                  onTap: () {
+                                    mostrarDetalle(context, ronda);
+                                  },
+                                );
+                              }),
+                            ],
                           ],
                         ),
                 ),
@@ -702,7 +807,7 @@ class _HistoryCard extends StatelessWidget {
                       ),
                       const SizedBox(height: 8),
                       Text(
-                        '${ronda.guardName} • '
+                        '${ronda.guardName} • ${ronda.shiftName.isEmpty ? 'Turno no registrado' : ronda.shiftName} • '
                         '${ronda.completedPoints} de '
                         '${ronda.totalPoints} puntos',
                         style: const TextStyle(
@@ -782,6 +887,13 @@ class _HistoryPointCard extends StatelessWidget {
               : 'Completado'
         : 'Pendiente';
 
+    final Color severityColor = switch (point.noveltySeverity) {
+      'Crítica' => const Color(0xFFD92D20),
+      'Alta' => const Color(0xFFF04438),
+      'Media' => naranja,
+      _ => verde,
+    };
+
     return Container(
       margin: const EdgeInsets.only(bottom: 11),
       padding: const EdgeInsets.all(14),
@@ -837,6 +949,27 @@ class _HistoryPointCard extends StatelessWidget {
                     ),
                   ),
                 ],
+                if (point.hasNovelty &&
+                    (point.noveltyCategory != null ||
+                        point.noveltySeverity != null)) ...[
+                  const SizedBox(height: 7),
+                  Wrap(
+                    spacing: 6,
+                    runSpacing: 5,
+                    children: [
+                      if (point.noveltyCategory != null)
+                        _HistoryNoveltyTag(
+                          text: point.noveltyCategory!,
+                          color: azulPrincipal,
+                        ),
+                      if (point.noveltySeverity != null)
+                        _HistoryNoveltyTag(
+                          text: point.noveltySeverity!,
+                          color: severityColor,
+                        ),
+                    ],
+                  ),
+                ],
                 if (point.observation.isNotEmpty) ...[
                   const SizedBox(height: 4),
                   Text(
@@ -845,6 +978,19 @@ class _HistoryPointCard extends StatelessWidget {
                       color: Color(0xFF98A2B3),
                       fontSize: 11,
                       height: 1.3,
+                    ),
+                  ),
+                ],
+                if (point.noveltyPhotoPath != null) ...[
+                  const SizedBox(height: 8),
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(10),
+                    child: Image.file(
+                      File(point.noveltyPhotoPath!),
+                      width: double.infinity,
+                      height: 115,
+                      fit: BoxFit.cover,
+                      errorBuilder: (_, _, _) => const SizedBox.shrink(),
                     ),
                   ),
                 ],
@@ -868,6 +1014,32 @@ class _HistoryPointCard extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _HistoryNoveltyTag extends StatelessWidget {
+  final String text;
+  final Color color;
+
+  const _HistoryNoveltyTag({required this.text, required this.color});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.10),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Text(
+        text,
+        style: TextStyle(
+          color: color,
+          fontSize: 10,
+          fontWeight: FontWeight.bold,
+        ),
       ),
     );
   }

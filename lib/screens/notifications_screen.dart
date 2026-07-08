@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../round_history.dart';
+
 class NotificationsScreen extends StatefulWidget {
   const NotificationsScreen({super.key});
 
@@ -12,70 +14,120 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
   static const Color azulMedio = Color(0xFF073C85);
   static const Color azulPrincipal = Color(0xFF0866FF);
   static const Color fondo = Color(0xFFF4F7FB);
-  static const Color verde = Color(0xFF16A36A);
   static const Color naranja = Color(0xFFF59E0B);
 
-  final List<Map<String, dynamic>> notificaciones = [
-    {
-      'titulo': 'Ronda pendiente',
-      'mensaje': 'Recuerda completar la ronda programada para este turno.',
-      'hora': 'Hace 10 min',
-      'icono': Icons.schedule_rounded,
-      'color': naranja,
-      'leida': false,
-    },
-    {
-      'titulo': 'Punto registrado',
-      'mensaje': 'Acceso principal fue registrado correctamente.',
-      'hora': 'Hace 25 min',
-      'icono': Icons.check_circle_rounded,
-      'color': verde,
-      'leida': false,
-    },
-    {
-      'titulo': 'Novedad registrada',
-      'mensaje': 'Se registró una novedad en el estacionamiento.',
-      'hora': 'Ayer · 18:40',
-      'icono': Icons.warning_amber_rounded,
-      'color': naranja,
-      'leida': true,
-    },
-    {
-      'titulo': 'Ronda finalizada',
-      'mensaje': 'La ronda del turno anterior fue completada.',
-      'hora': 'Ayer · 10:35',
-      'icono': Icons.verified_rounded,
-      'color': verde,
-      'leida': true,
-    },
-  ];
+  final Set<String> _readNotificationIds = {};
 
-  void marcarTodasComoLeidas() {
-    setState(() {
-      for (final notificacion in notificaciones) {
-        notificacion['leida'] = true;
+  List<_NoveltyNotification> _buildNotifications(
+    List<RoundHistoryItem> rounds,
+  ) {
+    final List<_NoveltyNotification> notifications = [];
+
+    for (final RoundHistoryItem round in rounds) {
+      int noveltyPoints = 0;
+
+      for (int index = 0; index < round.points.length; index++) {
+        final RoundHistoryPoint point = round.points[index];
+
+        if (!point.hasNovelty) {
+          continue;
+        }
+
+        noveltyPoints++;
+
+        final DateTime registeredAt = point.completedAt ?? round.finishedAt;
+        final List<String> details = [
+          if (point.noveltyCategory?.trim().isNotEmpty ?? false)
+            point.noveltyCategory!.trim(),
+          if (point.noveltySeverity?.trim().isNotEmpty ?? false)
+            'Gravedad ${point.noveltySeverity!.trim().toLowerCase()}',
+        ];
+        final String observation = point.observation.trim();
+
+        notifications.add(
+          _NoveltyNotification(
+            id: '${round.id}:$index:${registeredAt.microsecondsSinceEpoch}',
+            title: 'Novedad en ${point.name}',
+            message: observation.isNotEmpty
+                ? observation
+                : details.isNotEmpty
+                ? details.join(' · ')
+                : 'Se registró una novedad durante la ronda.',
+            registeredAt: registeredAt,
+            installation: round.installation,
+            guardName: round.guardName,
+          ),
+        );
       }
+
+      if (noveltyPoints == 0 && round.noveltyCount > 0) {
+        notifications.add(
+          _NoveltyNotification(
+            id: '${round.id}:general',
+            title: 'Ronda con novedades',
+            message:
+                'Esta ronda contiene ${round.noveltyCount} '
+                '${round.noveltyCount == 1 ? 'novedad registrada' : 'novedades registradas'}.',
+            registeredAt: round.finishedAt,
+            installation: round.installation,
+            guardName: round.guardName,
+          ),
+        );
+      }
+    }
+
+    notifications.sort(
+      (first, second) => second.registeredAt.compareTo(first.registeredAt),
+    );
+
+    return notifications;
+  }
+
+  String _formatDateTime(DateTime date) {
+    final DateTime now = DateTime.now();
+    final DateTime today = DateTime(now.year, now.month, now.day);
+    final DateTime dateDay = DateTime(date.year, date.month, date.day);
+    final String hour = date.hour.toString().padLeft(2, '0');
+    final String minute = date.minute.toString().padLeft(2, '0');
+
+    if (dateDay == today) {
+      return 'Hoy · $hour:$minute';
+    }
+
+    if (dateDay == today.subtract(const Duration(days: 1))) {
+      return 'Ayer · $hour:$minute';
+    }
+
+    final String day = date.day.toString().padLeft(2, '0');
+    final String month = date.month.toString().padLeft(2, '0');
+
+    return '$day/$month/${date.year} · $hour:$minute';
+  }
+
+  void _markAllAsRead(List<_NoveltyNotification> notifications) {
+    setState(() {
+      _readNotificationIds.addAll(
+        notifications.map((notification) => notification.id),
+      );
     });
 
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(
-        content: Text('Todas las notificaciones fueron marcadas como leídas.'),
+        content: Text('Todas las novedades fueron marcadas como revisadas.'),
         behavior: SnackBarBehavior.floating,
       ),
     );
   }
 
-  void abrirNotificacion(int index) {
+  void _openNotification(_NoveltyNotification notification) {
     setState(() {
-      notificaciones[index]['leida'] = true;
+      _readNotificationIds.add(notification.id);
     });
-
-    final notificacion = notificaciones[index];
 
     showModalBottomSheet(
       context: context,
       backgroundColor: Colors.transparent,
-      builder: (context) {
+      builder: (bottomSheetContext) {
         return Container(
           padding: const EdgeInsets.fromLTRB(20, 18, 20, 28),
           decoration: const BoxDecoration(
@@ -100,20 +152,18 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
                   width: 58,
                   height: 58,
                   decoration: BoxDecoration(
-                    color: (notificacion['color'] as Color).withValues(
-                      alpha: 0.12,
-                    ),
+                    color: const Color(0xFFFFF4E5),
                     borderRadius: BorderRadius.circular(18),
                   ),
-                  child: Icon(
-                    notificacion['icono'] as IconData,
-                    color: notificacion['color'] as Color,
+                  child: const Icon(
+                    Icons.warning_amber_rounded,
+                    color: naranja,
                     size: 31,
                   ),
                 ),
                 const SizedBox(height: 16),
                 Text(
-                  notificacion['titulo'] as String,
+                  notification.title,
                   textAlign: TextAlign.center,
                   style: const TextStyle(
                     color: azulOscuro,
@@ -123,7 +173,7 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
                 ),
                 const SizedBox(height: 10),
                 Text(
-                  notificacion['mensaje'] as String,
+                  notification.message,
                   textAlign: TextAlign.center,
                   style: const TextStyle(
                     color: Color(0xFF667085),
@@ -131,20 +181,27 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
                     height: 1.45,
                   ),
                 ),
-                const SizedBox(height: 10),
-                Text(
-                  notificacion['hora'] as String,
-                  style: const TextStyle(
-                    color: Color(0xFF98A2B3),
-                    fontSize: 12,
-                  ),
+                const SizedBox(height: 16),
+                _NotificationDetail(
+                  icon: Icons.apartment_rounded,
+                  value: notification.installation,
+                ),
+                const SizedBox(height: 9),
+                _NotificationDetail(
+                  icon: Icons.person_outline_rounded,
+                  value: notification.guardName,
+                ),
+                const SizedBox(height: 9),
+                _NotificationDetail(
+                  icon: Icons.schedule_rounded,
+                  value: _formatDateTime(notification.registeredAt),
                 ),
                 const SizedBox(height: 24),
                 SizedBox(
                   width: double.infinity,
                   height: 52,
                   child: ElevatedButton(
-                    onPressed: () => Navigator.pop(context),
+                    onPressed: () => Navigator.pop(bottomSheetContext),
                     style: ElevatedButton.styleFrom(
                       backgroundColor: azulPrincipal,
                       foregroundColor: Colors.white,
@@ -168,162 +225,231 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final int noLeidas = notificaciones
-        .where((item) => item['leida'] == false)
-        .length;
+    final RoundHistoryStore historyStore = RoundHistoryStore.instance;
 
-    return Scaffold(
-      backgroundColor: fondo,
-      body: SafeArea(
-        child: Column(
-          children: [
-            Container(
-              height: 72,
-              padding: const EdgeInsets.symmetric(horizontal: 8),
-              decoration: const BoxDecoration(
-                gradient: LinearGradient(
-                  colors: [azulOscuro, azulMedio],
-                  begin: Alignment.centerLeft,
-                  end: Alignment.centerRight,
-                ),
-              ),
-              child: Row(
-                children: [
-                  IconButton(
-                    onPressed: () => Navigator.pop(context),
-                    icon: const Icon(
-                      Icons.arrow_back_rounded,
-                      color: Colors.white,
+    return AnimatedBuilder(
+      animation: historyStore,
+      builder: (context, _) {
+        final List<_NoveltyNotification> notifications = _buildNotifications(
+          historyStore.rounds,
+        );
+        final int unread = notifications
+            .where(
+              (notification) => !_readNotificationIds.contains(notification.id),
+            )
+            .length;
+
+        return Scaffold(
+          backgroundColor: fondo,
+          body: SafeArea(
+            child: Column(
+              children: [
+                Container(
+                  height: 72,
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                  decoration: const BoxDecoration(
+                    gradient: LinearGradient(
+                      colors: [azulOscuro, azulMedio],
+                      begin: Alignment.centerLeft,
+                      end: Alignment.centerRight,
                     ),
                   ),
-                  const Expanded(
-                    child: Text(
-                      'Notificaciones',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 19,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                  ),
-                  IconButton(
-                    onPressed: noLeidas == 0 ? null : marcarTodasComoLeidas,
-                    icon: Icon(
-                      Icons.done_all_rounded,
-                      color: noLeidas == 0 ? Colors.white38 : Colors.white,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            Expanded(
-              child: ListView(
-                padding: const EdgeInsets.all(20),
-                children: [
-                  Container(
-                    width: double.infinity,
-                    padding: const EdgeInsets.all(18),
-                    decoration: BoxDecoration(
-                      gradient: const LinearGradient(
-                        colors: [Color(0xFF0F6FFF), azulMedio],
-                        begin: Alignment.topLeft,
-                        end: Alignment.bottomRight,
-                      ),
-                      borderRadius: BorderRadius.circular(20),
-                      boxShadow: [
-                        BoxShadow(
-                          color: azulPrincipal.withValues(alpha: 0.22),
-                          blurRadius: 18,
-                          offset: const Offset(0, 10),
-                        ),
-                      ],
-                    ),
-                    child: Row(
-                      children: [
-                        const Icon(
-                          Icons.notifications_active_rounded,
-                          color: Colors.white,
-                          size: 38,
-                        ),
-                        const SizedBox(width: 14),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              const Text(
-                                'Centro de notificaciones',
-                                style: TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 19,
-                                  fontWeight: FontWeight.bold,
-                                ),
-                              ),
-                              const SizedBox(height: 5),
-                              Text(
-                                noLeidas == 0
-                                    ? 'No tienes notificaciones pendientes.'
-                                    : 'Tienes $noLeidas notificaciones sin leer.',
-                                style: const TextStyle(
-                                  color: Colors.white70,
-                                  fontSize: 14,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(height: 24),
-                  Row(
+                  child: Row(
                     children: [
+                      IconButton(
+                        onPressed: () => Navigator.pop(context),
+                        icon: const Icon(
+                          Icons.arrow_back_rounded,
+                          color: Colors.white,
+                        ),
+                      ),
                       const Expanded(
                         child: Text(
-                          'Notificaciones recientes',
+                          'Novedades',
+                          textAlign: TextAlign.center,
                           style: TextStyle(
-                            color: azulOscuro,
-                            fontSize: 20,
+                            color: Colors.white,
+                            fontSize: 19,
                             fontWeight: FontWeight.bold,
                           ),
                         ),
                       ),
-                      if (noLeidas > 0)
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 10,
-                            vertical: 6,
-                          ),
-                          decoration: BoxDecoration(
-                            color: const Color(0xFFEAF2FF),
-                            borderRadius: BorderRadius.circular(20),
-                          ),
-                          child: Text(
-                            '$noLeidas nuevas',
-                            style: const TextStyle(
-                              color: azulPrincipal,
-                              fontSize: 12,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
+                      IconButton(
+                        tooltip: 'Marcar todas como revisadas',
+                        onPressed: unread == 0
+                            ? null
+                            : () => _markAllAsRead(notifications),
+                        icon: Icon(
+                          Icons.done_all_rounded,
+                          color: unread == 0 ? Colors.white38 : Colors.white,
                         ),
+                      ),
                     ],
                   ),
-                  const SizedBox(height: 14),
-                  ...List.generate(notificaciones.length, (index) {
-                    final notificacion = notificaciones[index];
+                ),
+                Expanded(
+                  child: notifications.isEmpty
+                      ? const _EmptyNotifications()
+                      : ListView(
+                          padding: const EdgeInsets.all(20),
+                          children: [
+                            Container(
+                              width: double.infinity,
+                              padding: const EdgeInsets.all(18),
+                              decoration: BoxDecoration(
+                                gradient: const LinearGradient(
+                                  colors: [Color(0xFF0F6FFF), azulMedio],
+                                  begin: Alignment.topLeft,
+                                  end: Alignment.bottomRight,
+                                ),
+                                borderRadius: BorderRadius.circular(20),
+                                boxShadow: [
+                                  BoxShadow(
+                                    color: azulPrincipal.withValues(
+                                      alpha: 0.22,
+                                    ),
+                                    blurRadius: 18,
+                                    offset: const Offset(0, 10),
+                                  ),
+                                ],
+                              ),
+                              child: Row(
+                                children: [
+                                  const Icon(
+                                    Icons.notifications_active_rounded,
+                                    color: Colors.white,
+                                    size: 38,
+                                  ),
+                                  const SizedBox(width: 14),
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        const Text(
+                                          'Novedades reales',
+                                          style: TextStyle(
+                                            color: Colors.white,
+                                            fontSize: 19,
+                                            fontWeight: FontWeight.bold,
+                                          ),
+                                        ),
+                                        const SizedBox(height: 5),
+                                        Text(
+                                          '${notifications.length} '
+                                          '${notifications.length == 1 ? 'registro encontrado' : 'registros encontrados'}',
+                                          style: const TextStyle(
+                                            color: Colors.white70,
+                                            fontSize: 14,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            const SizedBox(height: 24),
+                            Row(
+                              children: [
+                                const Expanded(
+                                  child: Text(
+                                    'Actividad reciente',
+                                    style: TextStyle(
+                                      color: azulOscuro,
+                                      fontSize: 20,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                ),
+                                if (unread > 0)
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 10,
+                                      vertical: 6,
+                                    ),
+                                    decoration: BoxDecoration(
+                                      color: const Color(0xFFFFF4E5),
+                                      borderRadius: BorderRadius.circular(20),
+                                    ),
+                                    child: Text(
+                                      '$unread sin revisar',
+                                      style: const TextStyle(
+                                        color: naranja,
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
+                                  ),
+                              ],
+                            ),
+                            const SizedBox(height: 14),
+                            ...notifications.map((notification) {
+                              return _NotificationCard(
+                                notification: notification,
+                                formattedTime: _formatDateTime(
+                                  notification.registeredAt,
+                                ),
+                                read: _readNotificationIds.contains(
+                                  notification.id,
+                                ),
+                                onTap: () => _openNotification(notification),
+                              );
+                            }),
+                          ],
+                        ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
 
-                    return _NotificationCard(
-                      title: notificacion['titulo'] as String,
-                      message: notificacion['mensaje'] as String,
-                      time: notificacion['hora'] as String,
-                      icon: notificacion['icono'] as IconData,
-                      color: notificacion['color'] as Color,
-                      read: notificacion['leida'] as bool,
-                      onTap: () => abrirNotificacion(index),
-                    );
-                  }),
-                ],
+class _EmptyNotifications extends StatelessWidget {
+  const _EmptyNotifications();
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.all(32),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Container(
+              width: 112,
+              height: 112,
+              decoration: const BoxDecoration(
+                color: Color(0xFFEAF2FF),
+                shape: BoxShape.circle,
+              ),
+              child: const Icon(
+                Icons.notifications_none_rounded,
+                color: Color(0xFF0866FF),
+                size: 58,
+              ),
+            ),
+            const SizedBox(height: 22),
+            const Text(
+              'Sin novedades registradas',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                color: Color(0xFF061B44),
+                fontSize: 22,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            const SizedBox(height: 9),
+            const Text(
+              'Las novedades aparecerán aquí únicamente después de registrarlas en una ronda real.',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                color: Color(0xFF667085),
+                fontSize: 14,
+                height: 1.45,
               ),
             ),
           ],
@@ -334,20 +460,14 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
 }
 
 class _NotificationCard extends StatelessWidget {
-  final String title;
-  final String message;
-  final String time;
-  final IconData icon;
-  final Color color;
+  final _NoveltyNotification notification;
+  final String formattedTime;
   final bool read;
   final VoidCallback onTap;
 
   const _NotificationCard({
-    required this.title,
-    required this.message,
-    required this.time,
-    required this.icon,
-    required this.color,
+    required this.notification,
+    required this.formattedTime,
     required this.read,
     required this.onTap,
   });
@@ -357,7 +477,7 @@ class _NotificationCard extends StatelessWidget {
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
       child: Material(
-        color: read ? Colors.white : const Color(0xFFF7FAFF),
+        color: read ? Colors.white : const Color(0xFFFFFBF5),
         borderRadius: BorderRadius.circular(17),
         elevation: read ? 1 : 3,
         shadowColor: Colors.black.withValues(alpha: 0.07),
@@ -376,10 +496,14 @@ class _NotificationCard extends StatelessWidget {
                       width: 46,
                       height: 46,
                       decoration: BoxDecoration(
-                        color: color.withValues(alpha: 0.12),
+                        color: const Color(0xFFFFF4E5),
                         borderRadius: BorderRadius.circular(13),
                       ),
-                      child: Icon(icon, color: color, size: 26),
+                      child: const Icon(
+                        Icons.warning_amber_rounded,
+                        color: Color(0xFFF59E0B),
+                        size: 26,
+                      ),
                     ),
                     if (!read)
                       const Positioned(
@@ -387,7 +511,7 @@ class _NotificationCard extends StatelessWidget {
                         right: -3,
                         child: CircleAvatar(
                           radius: 6,
-                          backgroundColor: Color(0xFF0866FF),
+                          backgroundColor: Color(0xFFF04438),
                         ),
                       ),
                   ],
@@ -398,7 +522,7 @@ class _NotificationCard extends StatelessWidget {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        title,
+                        notification.title,
                         style: TextStyle(
                           color: const Color(0xFF061B44),
                           fontSize: 15,
@@ -407,7 +531,9 @@ class _NotificationCard extends StatelessWidget {
                       ),
                       const SizedBox(height: 5),
                       Text(
-                        message,
+                        notification.message,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
                         style: const TextStyle(
                           color: Color(0xFF667085),
                           fontSize: 13,
@@ -416,7 +542,9 @@ class _NotificationCard extends StatelessWidget {
                       ),
                       const SizedBox(height: 7),
                       Text(
-                        time,
+                        '${notification.installation} · $formattedTime',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
                         style: const TextStyle(
                           color: Color(0xFF98A2B3),
                           fontSize: 11,
@@ -437,4 +565,47 @@ class _NotificationCard extends StatelessWidget {
       ),
     );
   }
+}
+
+class _NotificationDetail extends StatelessWidget {
+  final IconData icon;
+  final String value;
+
+  const _NotificationDetail({required this.icon, required this.value});
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        Icon(icon, color: const Color(0xFF0866FF), size: 18),
+        const SizedBox(width: 7),
+        Flexible(
+          child: Text(
+            value,
+            textAlign: TextAlign.center,
+            style: const TextStyle(color: Color(0xFF667085), fontSize: 12),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _NoveltyNotification {
+  final String id;
+  final String title;
+  final String message;
+  final DateTime registeredAt;
+  final String installation;
+  final String guardName;
+
+  const _NoveltyNotification({
+    required this.id,
+    required this.title,
+    required this.message,
+    required this.registeredAt,
+    required this.installation,
+    required this.guardName,
+  });
 }

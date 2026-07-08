@@ -1,26 +1,46 @@
 import 'package:flutter/material.dart';
 
+import 'services/sync_status.dart';
+
 class RoundHistoryItem {
   final String id;
+  final String guardId;
   final String guardName;
+  final String role;
   final String installation;
+  final String shiftRecordId;
+  final String shiftId;
+  final String shiftName;
+  final String shiftScheduledStart;
+  final String shiftScheduledEnd;
+  final DateTime? shiftStartedAt;
   final DateTime startedAt;
   final DateTime finishedAt;
   final int totalPoints;
   final int completedPoints;
   final int noveltyCount;
   final List<RoundHistoryPoint> points;
+  final SyncStatus syncStatus;
 
   RoundHistoryItem({
     required this.id,
+    this.guardId = '',
     required this.guardName,
+    this.role = '',
     required this.installation,
+    this.shiftRecordId = '',
+    this.shiftId = '',
+    this.shiftName = '',
+    this.shiftScheduledStart = '',
+    this.shiftScheduledEnd = '',
+    this.shiftStartedAt,
     required this.startedAt,
     required this.finishedAt,
     required this.totalPoints,
     required this.completedPoints,
     required this.noveltyCount,
     required this.points,
+    this.syncStatus = SyncStatus.pending,
   });
 
   bool get completed {
@@ -46,6 +66,18 @@ class RoundHistoryItem {
 
     return 'Completada';
   }
+
+  String get shiftDisplay {
+    if (shiftName.isEmpty) {
+      return 'Turno no registrado';
+    }
+
+    if (shiftScheduledStart.isEmpty || shiftScheduledEnd.isEmpty) {
+      return shiftName;
+    }
+
+    return '$shiftName · $shiftScheduledStart - $shiftScheduledEnd';
+  }
 }
 
 class RoundHistoryPoint {
@@ -53,6 +85,9 @@ class RoundHistoryPoint {
   final bool completed;
   final bool hasNovelty;
   final String observation;
+  final String? noveltyCategory;
+  final String? noveltySeverity;
+  final String? noveltyPhotoPath;
   final DateTime? completedAt;
 
   RoundHistoryPoint({
@@ -60,6 +95,9 @@ class RoundHistoryPoint {
     required this.completed,
     required this.hasNovelty,
     required this.observation,
+    this.noveltyCategory,
+    this.noveltySeverity,
+    this.noveltyPhotoPath,
     required this.completedAt,
   });
 }

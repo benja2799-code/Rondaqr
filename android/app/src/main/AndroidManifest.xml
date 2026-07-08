@@ -6,7 +6,7 @@
         android:required="false" />
 
     <application
-        android:label="rondaqr"
+        android:label="RondaQR"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         <activity
