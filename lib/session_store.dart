@@ -65,7 +65,12 @@ class SessionStore extends ChangeNotifier {
             );
     } catch (error) {
       debugPrint('No fue posible restaurar la sesión: $error');
-      _lastNotice = 'Sin conexión, usando datos locales.';
+      _lastNotice =
+          _repository.lastNotice ??
+          'Sin conexión. Esta versión conectada requiere internet para registrar datos.';
+      if (_lastNotice?.startsWith('Sin conex') == true) {
+        _lastNotice = 'No fue posible restaurar la sesión guardada.';
+      }
       _session = savedSession.user.isActive
           ? AppSession(
               user: savedSession.user,

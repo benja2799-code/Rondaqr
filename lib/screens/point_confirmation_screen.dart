@@ -5,6 +5,9 @@ import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
 
 import '../round_state.dart';
+import '../services/supabase_round_service.dart';
+import '../services/supabase_service.dart';
+import '../session_store.dart';
 import '../user_configuration.dart';
 import 'round_summary_screen.dart';
 
@@ -278,6 +281,29 @@ class _PointConfirmationScreenState extends State<PointConfirmationScreen> {
       final String? savedPhotoPath = conNovedad
           ? await _guardarFotoPermanente()
           : null;
+      OnlinePointRegistration? onlineRegistration;
+
+      if (SupabaseService.instance.onlineMode) {
+        final RoundState roundState = RoundState.instance;
+        final RoundPoint? point = roundState.getPointById(widget.pointId);
+        final user = SessionStore.instance.currentUser;
+        final RoundOperationalContext? roundContext =
+            roundState.operationalContext;
+
+        if (point == null || user == null || roundContext == null) {
+          throw StateError(
+            'No existe una ronda online activa para registrar este punto.',
+          );
+        }
+
+        onlineRegistration = await SupabaseRoundService.instance.registerPoint(
+          user: user,
+          context: roundContext,
+          point: point,
+          hasNovelty: conNovedad,
+          observation: observacion,
+        );
+      }
 
       await RoundState.instance.completePoint(
         pointId: widget.pointId,
@@ -286,8 +312,10 @@ class _PointConfirmationScreenState extends State<PointConfirmationScreen> {
         noveltyCategory: categoriaNovedad,
         noveltySeverity: gravedadNovedad,
         noveltyPhotoPath: savedPhotoPath,
+        onlineRoundPointId: onlineRegistration?.roundPointId,
+        completedAt: onlineRegistration?.scannedAt,
       );
-    } catch (_) {
+    } catch (error) {
       if (!mounted) {
         return;
       }
@@ -297,9 +325,13 @@ class _PointConfirmationScreenState extends State<PointConfirmationScreen> {
       });
 
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
+        SnackBar(
           content: Text(
-            'No fue posible guardar la novedad o su fotografía. Intenta nuevamente.',
+            error is SupabasePointRegistrationException
+                ? error.message
+                : error is StateError
+                ? error.message.toString()
+                : 'No fue posible guardar la novedad o su fotografía. Intenta nuevamente.',
           ),
           behavior: SnackBarBehavior.floating,
         ),

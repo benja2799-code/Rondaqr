@@ -25,6 +25,8 @@ class SupabaseService extends ChangeNotifier {
   bool get initializationAttempted => _initializationAttempted;
   String? get initializationError => _initializationError;
   SupabaseClient? get client => _client;
+  bool get onlineMode => isConfigured;
+  String get deviceId => 'rondaqr_flutter_android';
 
   String get modeLabel {
     if (!isConfigured) {
@@ -36,6 +38,38 @@ class SupabaseService extends ChangeNotifier {
     }
 
     return 'Supabase no disponible';
+  }
+
+  SupabaseClient requireClient() {
+    final SupabaseClient? currentClient = _client;
+
+    if (!isConfigured || currentClient == null) {
+      throw StateError(
+        'Se requiere conexión a internet para usar RondaQR v2.0.',
+      );
+    }
+
+    return currentClient;
+  }
+
+  Never throwOnlineRequired() {
+    throw StateError(
+      'Sin conexión. Esta versión conectada requiere internet para registrar datos.',
+    );
+  }
+
+  bool isLikelyNetworkError(Object error) {
+    final String text = error.toString().toLowerCase();
+    return text.contains('socket') ||
+        text.contains('network') ||
+        text.contains('connection') ||
+        text.contains('host lookup') ||
+        text.contains('failed host lookup') ||
+        text.contains('connection refused') ||
+        text.contains('timed out') ||
+        text.contains('timeout') ||
+        text.contains('unreachable') ||
+        text.contains('no address associated with hostname');
   }
 
   Future<void> initialize() async {

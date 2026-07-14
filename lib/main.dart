@@ -20,6 +20,7 @@ import 'screens/profile_screen.dart';
 import 'screens/reports_screen.dart';
 import 'screens/users_screen.dart';
 import 'services/supabase_auth_service.dart';
+import 'services/supabase_data_coordinator.dart';
 import 'services/supabase_service.dart';
 import 'session_store.dart';
 import 'user_accounts.dart';
@@ -49,7 +50,17 @@ Future<void> main() async {
   workShiftStore.onHistoryChanged = localStorage.saveShiftHistory;
   controlPointStore.onPointsChanged = localStorage.saveControlPoints;
   sessionStore.onSessionCreated = localStorage.saveSession;
-  sessionStore.onSessionCleared = localStorage.clearSession;
+  sessionStore.onSessionCleared = () async {
+    await localStorage.clearSession();
+
+    if (supabaseService.onlineMode) {
+      await roundState.resetRound();
+      await localStorage.saveActiveShift(null);
+      workShiftStore.loadActiveShift(null);
+      controlPointStore.loadPoints(const []);
+      roundState.configureControlPoints(const []);
+    }
+  };
   configurationStore.onConfigurationChanged = (configuration) async {
     await localStorage.saveUserConfiguration(configuration);
 
@@ -88,9 +99,10 @@ Future<void> main() async {
   historyStore.loadRounds(savedRounds);
   configurationStore.loadConfiguration(savedConfiguration);
   final bool usersSeeded = userAccountStore.loadAccounts(
-    savedUsers,
+    supabaseService.onlineMode ? const [] : savedUsers,
     installationName: configurationStore.configuration.installationNameDisplay,
     company: configurationStore.configuration.companyDisplay,
+    seedDefaults: !supabaseService.onlineMode,
   );
   sessionStore.useRepository(
     SupabaseAuthService(
@@ -98,7 +110,10 @@ Future<void> main() async {
       localFallback: LocalAuthRepository(accountStore: userAccountStore),
     ),
   );
-  final bool shiftsSeeded = workShiftStore.loadDefinitions(savedShifts);
+  final bool shiftsSeeded = workShiftStore.loadDefinitions(
+    supabaseService.onlineMode ? const [] : savedShifts,
+    seedDefaults: !supabaseService.onlineMode,
+  );
   workShiftStore.loadHistory(savedShiftHistory);
   workShiftStore.loadActiveShift(savedActiveShift);
 
@@ -112,7 +127,9 @@ Future<void> main() async {
     await localStorage.saveShiftDefinitions(workShiftStore.definitions);
   }
 
-  controlPointStore.loadPoints(savedControlPoints);
+  controlPointStore.loadPoints(
+    supabaseService.onlineMode ? const [] : savedControlPoints,
+  );
   roundState.configureControlPoints(controlPointStore.activePoints);
   roundState.loadActiveRound(savedActiveRound);
   await sessionStore.loadSession(savedSession);
@@ -161,6 +178,8 @@ Future<void> main() async {
       );
     }
   });
+
+  await SupabaseDataCoordinator.instance.refreshCurrentUserData(force: true);
 
   runApp(const RondaQRApp());
 }

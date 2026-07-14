@@ -305,6 +305,7 @@ class WorkShiftStore extends ChangeNotifier {
 
   final List<ShiftDefinition> _definitions = [];
   final List<WorkShiftRecord> _history = [];
+  final List<WorkShiftRecord> _remoteActiveShifts = [];
   WorkShiftRecord? _activeShift;
   bool _initialized = false;
 
@@ -316,10 +317,23 @@ class WorkShiftStore extends ChangeNotifier {
   WorkShiftRecord? get activeShift => _activeShift;
   List<ShiftDefinition> get definitions => List.unmodifiable(_definitions);
   List<WorkShiftRecord> get history => List.unmodifiable(_history);
+  List<WorkShiftRecord> get activeShifts {
+    if (_remoteActiveShifts.isNotEmpty) {
+      return List.unmodifiable(_remoteActiveShifts);
+    }
 
-  bool loadDefinitions(List<ShiftDefinition>? savedDefinitions) {
+    final WorkShiftRecord? current = _activeShift;
+    return current == null
+        ? const []
+        : List<WorkShiftRecord>.unmodifiable([current]);
+  }
+
+  bool loadDefinitions(
+    List<ShiftDefinition>? savedDefinitions, {
+    bool seedDefaults = true,
+  }) {
     final List<ShiftDefinition> valid = savedDefinitions ?? [];
-    final bool seeded = valid.isEmpty;
+    final bool seeded = seedDefaults && valid.isEmpty;
 
     _definitions
       ..clear()
@@ -330,6 +344,7 @@ class WorkShiftStore extends ChangeNotifier {
   }
 
   void loadActiveShift(WorkShiftRecord? savedActiveShift) {
+    _remoteActiveShifts.clear();
     _activeShift = savedActiveShift != null && savedActiveShift.isActive
         ? savedActiveShift
         : null;
@@ -341,6 +356,44 @@ class WorkShiftStore extends ChangeNotifier {
     _history
       ..clear()
       ..addAll(savedHistory.where((shift) => !shift.isActive));
+    _initialized = true;
+    notifyListeners();
+  }
+
+  void loadRemoteActiveShifts(
+    List<WorkShiftRecord> shifts, {
+    String currentUserId = '',
+  }) {
+    final List<WorkShiftRecord> active = shifts
+        .where((shift) => shift.isActive)
+        .toList(growable: false);
+
+    _remoteActiveShifts
+      ..clear()
+      ..addAll(active);
+
+    if (currentUserId.isNotEmpty) {
+      _activeShift = activeForUserFromList(currentUserId, active);
+    } else if (active.length == 1) {
+      _activeShift = active.first;
+    }
+
+    _initialized = true;
+    notifyListeners();
+  }
+
+  void replaceDefinitionsFromRemote(List<ShiftDefinition> definitions) {
+    _definitions
+      ..clear()
+      ..addAll(definitions);
+    _initialized = true;
+    notifyListeners();
+  }
+
+  void replaceHistoryFromRemote(List<WorkShiftRecord> shifts) {
+    _history
+      ..clear()
+      ..addAll(shifts.where((shift) => !shift.isActive));
     _initialized = true;
     notifyListeners();
   }
@@ -388,8 +441,20 @@ class WorkShiftStore extends ChangeNotifier {
   }
 
   WorkShiftRecord? activeForUser(String userId) {
-    final WorkShiftRecord? active = _activeShift;
-    return active != null && active.userId == userId ? active : null;
+    return activeForUserFromList(userId, activeShifts);
+  }
+
+  WorkShiftRecord? activeForUserFromList(
+    String userId,
+    List<WorkShiftRecord> shifts,
+  ) {
+    for (final WorkShiftRecord shift in shifts) {
+      if (shift.userId == userId && shift.isActive) {
+        return shift;
+      }
+    }
+
+    return null;
   }
 
   WorkShiftRecord? latestClosedForShift({
@@ -455,6 +520,9 @@ class WorkShiftStore extends ChangeNotifier {
     await saveFunction(shift);
 
     _activeShift = shift;
+    _remoteActiveShifts
+      ..clear()
+      ..add(shift);
     notifyListeners();
     return shift;
   }
@@ -492,6 +560,7 @@ class WorkShiftStore extends ChangeNotifier {
       ..clear()
       ..addAll(updatedHistory);
     _activeShift = null;
+    _remoteActiveShifts.removeWhere((shift) => shift.id == current.id);
     notifyListeners();
     return closed;
   }

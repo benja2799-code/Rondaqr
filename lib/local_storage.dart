@@ -568,6 +568,9 @@ class LocalStorage {
                   activeRound.operationalContext!.shiftScheduledEnd,
               'shiftStartedAt': activeRound.operationalContext!.shiftStartedAt
                   .toIso8601String(),
+              'onlineRoundId': activeRound.operationalContext!.onlineRoundId,
+              'onlineRoundLocalId':
+                  activeRound.operationalContext!.onlineRoundLocalId,
             },
       'points': activeRound.points.map((point) {
         return {
@@ -583,6 +586,7 @@ class LocalStorage {
           'noveltyCategory': point.noveltyCategory,
           'noveltySeverity': point.noveltySeverity,
           'noveltyPhotoPath': point.noveltyPhotoPath,
+          'onlineRoundPointId': point.onlineRoundPointId,
           'completedAt': point.completedAt?.toIso8601String(),
         };
       }).toList(),
@@ -652,6 +656,7 @@ class LocalStorage {
               noveltyCategory: pointMap['noveltyCategory'] as String?,
               noveltySeverity: pointMap['noveltySeverity'] as String?,
               noveltyPhotoPath: pointMap['noveltyPhotoPath'] as String?,
+              onlineRoundPointId: pointMap['onlineRoundPointId'] as String?,
               completedAt: completedAtText == null
                   ? null
                   : DateTime.tryParse(completedAtText),
@@ -689,6 +694,8 @@ class LocalStorage {
             shiftScheduledStart: readText('shiftScheduledStart'),
             shiftScheduledEnd: readText('shiftScheduledEnd'),
             shiftStartedAt: shiftStartedAt,
+            onlineRoundId: readText('onlineRoundId'),
+            onlineRoundLocalId: readText('onlineRoundLocalId'),
           );
         }
       }

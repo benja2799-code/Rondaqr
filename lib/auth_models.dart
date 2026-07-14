@@ -1,4 +1,4 @@
-enum AppRole { administrator, guard }
+enum AppRole { administrator, supervisor, guard }
 
 enum AppPermission {
   manageRounds,
@@ -16,6 +16,7 @@ extension AppRoleAccess on AppRole {
   String get label {
     return switch (this) {
       AppRole.administrator => 'Administrador',
+      AppRole.supervisor => 'Supervisor',
       AppRole.guard => 'Guardia',
     };
   }
@@ -23,6 +24,12 @@ extension AppRoleAccess on AppRole {
   Set<AppPermission> get permissions {
     return switch (this) {
       AppRole.administrator => Set<AppPermission>.from(AppPermission.values),
+      AppRole.supervisor => {
+        AppPermission.viewHistory,
+        AppPermission.viewReports,
+        AppPermission.viewNovelties,
+        AppPermission.viewProfile,
+      },
       AppRole.guard => {
         AppPermission.manageRounds,
         AppPermission.scanQr,

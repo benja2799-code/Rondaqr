@@ -5,6 +5,8 @@ import 'package:rondaqr/auth_models.dart';
 import 'package:rondaqr/round_history.dart';
 import 'package:rondaqr/round_history_filters.dart';
 import 'package:rondaqr/services/report_pdf_service.dart';
+import 'package:rondaqr/services/supabase_round_service.dart';
+import 'package:rondaqr/services/supabase_service.dart';
 import 'package:rondaqr/session_store.dart';
 import 'package:rondaqr/user_accounts.dart';
 import 'package:rondaqr/user_configuration.dart';
@@ -38,11 +40,85 @@ class _ReportsScreenState extends State<ReportsScreen> {
   bool _reportOnlyWithNovelties = false;
   bool _generatingPdf = false;
   GeneratedReportPdf? _lastGeneratedPdf;
+  bool _loadingOnlineRounds = false;
+  bool _onlineRoundsLoaded = false;
+  String? _onlineRoundsError;
+  String? _onlineRoundsTechnicalDetail;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _loadOnlineReportRounds();
+    });
+  }
 
   @override
   void dispose() {
     _searchController.dispose();
     super.dispose();
+  }
+
+  Future<void> _loadOnlineReportRounds() async {
+    if (!SupabaseService.instance.onlineMode) {
+      return;
+    }
+
+    final AppUser? user = SessionStore.instance.currentUser;
+    if (user == null || _loadingOnlineRounds) {
+      return;
+    }
+
+    setState(() {
+      _loadingOnlineRounds = true;
+      _onlineRoundsError = null;
+      _onlineRoundsTechnicalDetail = null;
+    });
+
+    try {
+      await SupabaseRoundService.instance.loadCompletedRoundsForHistory(
+        user,
+        caller: 'ReportsScreen',
+      );
+
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _onlineRoundsLoaded = true;
+      });
+    } catch (error, stackTrace) {
+      debugPrint(
+        'No se pudo cargar la información de reportes desde Supabase: $error',
+      );
+      debugPrintStack(stackTrace: stackTrace);
+
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _onlineRoundsLoaded = true;
+        _onlineRoundsError =
+            'No se pudo cargar la información de reportes desde Supabase.';
+        _onlineRoundsTechnicalDetail = error is SupabaseHistoryLoadException
+            ? error.technicalDetail
+            : error.toString();
+      });
+    } finally {
+      if (mounted) {
+        setState(() {
+          _loadingOnlineRounds = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _refreshReports() async {
+    if (SupabaseService.instance.onlineMode) {
+      await _loadOnlineReportRounds();
+    }
   }
 
   void _clearFilters() {
@@ -485,6 +561,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
             configurationStore.configuration;
         final String currentUserName =
             sessionStore.currentUser?.displayName ?? 'Administrador';
+        final bool onlineMode = SupabaseService.instance.onlineMode;
         final List<RoundHistoryItem> allRounds = historyStore.rounds;
         final List<WorkShiftRecord> allShifts = _allShiftRecords(shiftStore);
         final bool hasReportData = allRounds.isNotEmpty || allShifts.isNotEmpty;
@@ -560,382 +637,495 @@ class _ReportsScreenState extends State<ReportsScreen> {
                   ),
                 ),
                 Expanded(
-                  child: !hasReportData
-                      ? const _EmptyReports()
-                      : ListView(
-                          padding: const EdgeInsets.all(20),
-                          children: [
-                            _PdfReportPanel(
-                              baseDate: _reportBaseDate,
-                              selectedGuardId: _reportGuardId,
-                              selectedShiftId: _reportShiftId,
-                              onlyWithNovelties: _reportOnlyWithNovelties,
-                              generating: _generatingPdf,
-                              lastGeneratedPdf: _lastGeneratedPdf,
-                              userStore: userStore,
-                              shiftStore: shiftStore,
-                              formatDate: formatearFecha,
-                              onPickDate: _pickReportBaseDate,
-                              onGuardChanged: (value) {
-                                setState(() {
-                                  _reportGuardId = value ?? '';
-                                  _lastGeneratedPdf = null;
-                                });
-                              },
-                              onShiftChanged: (value) {
-                                setState(() {
-                                  _reportShiftId = value ?? '';
-                                  _lastGeneratedPdf = null;
-                                });
-                              },
-                              onOnlyNoveltiesChanged: (value) {
-                                setState(() {
-                                  _reportOnlyWithNovelties = value;
-                                  _lastGeneratedPdf = null;
-                                });
-                              },
-                              onGenerateWeekly: () => _generateReportPdf(
-                                type: ReportPdfPeriodType.weekly,
-                                configuration: configuration,
+                  child: RefreshIndicator(
+                    onRefresh: _refreshReports,
+                    child:
+                        onlineMode &&
+                            !_onlineRoundsLoaded &&
+                            _loadingOnlineRounds
+                        ? const _ReportsLoading()
+                        : _onlineRoundsError != null
+                        ? _ReportsLoadError(
+                            message: _onlineRoundsError!,
+                            technicalDetail: _onlineRoundsTechnicalDetail,
+                            onRetry: _loadOnlineReportRounds,
+                          )
+                        : !hasReportData
+                        ? const _ReportsScrollablePlaceholder(
+                            child: _EmptyReports(),
+                          )
+                        : ListView(
+                            padding: const EdgeInsets.all(20),
+                            children: [
+                              _PdfReportPanel(
+                                baseDate: _reportBaseDate,
+                                selectedGuardId: _reportGuardId,
+                                selectedShiftId: _reportShiftId,
+                                onlyWithNovelties: _reportOnlyWithNovelties,
+                                generating: _generatingPdf,
+                                lastGeneratedPdf: _lastGeneratedPdf,
                                 userStore: userStore,
                                 shiftStore: shiftStore,
-                                rounds: allRounds,
+                                formatDate: formatearFecha,
+                                onPickDate: _pickReportBaseDate,
+                                onGuardChanged: (value) {
+                                  setState(() {
+                                    _reportGuardId = value ?? '';
+                                    _lastGeneratedPdf = null;
+                                  });
+                                },
+                                onShiftChanged: (value) {
+                                  setState(() {
+                                    _reportShiftId = value ?? '';
+                                    _lastGeneratedPdf = null;
+                                  });
+                                },
+                                onOnlyNoveltiesChanged: (value) {
+                                  setState(() {
+                                    _reportOnlyWithNovelties = value;
+                                    _lastGeneratedPdf = null;
+                                  });
+                                },
+                                onGenerateWeekly: () => _generateReportPdf(
+                                  type: ReportPdfPeriodType.weekly,
+                                  configuration: configuration,
+                                  userStore: userStore,
+                                  shiftStore: shiftStore,
+                                  rounds: allRounds,
+                                ),
+                                onGenerateMonthly: () => _generateReportPdf(
+                                  type: ReportPdfPeriodType.monthly,
+                                  configuration: configuration,
+                                  userStore: userStore,
+                                  shiftStore: shiftStore,
+                                  rounds: allRounds,
+                                ),
+                                onShowSavedPath: _showSavedPdfPath,
+                                onShare: _shareLastPdf,
                               ),
-                              onGenerateMonthly: () => _generateReportPdf(
-                                type: ReportPdfPeriodType.monthly,
-                                configuration: configuration,
-                                userStore: userStore,
-                                shiftStore: shiftStore,
-                                rounds: allRounds,
-                              ),
-                              onShowSavedPath: _showSavedPdfPath,
-                              onShare: _shareLastPdf,
-                            ),
-                            const SizedBox(height: 18),
-                            RoundHistoryFilterPanel(
-                              searchController: _searchController,
-                              resultCount: rondas.length,
-                              activeFilterCount: _filters.activeCount,
-                              hasActiveFilters: _filters.isActive,
-                              onSearchChanged: (value) {
-                                setState(() {
-                                  _filters.searchText = value;
-                                });
-                              },
-                              onOpenFilters: () => _openFilters(allRounds),
-                              onClearFilters: _clearFilters,
-                            ),
-                            const SizedBox(height: 18),
-                            if (rondas.isEmpty)
-                              NoRoundFilterResults(
+                              const SizedBox(height: 18),
+                              RoundHistoryFilterPanel(
+                                searchController: _searchController,
+                                resultCount: rondas.length,
+                                activeFilterCount: _filters.activeCount,
+                                hasActiveFilters: _filters.isActive,
+                                onSearchChanged: (value) {
+                                  setState(() {
+                                    _filters.searchText = value;
+                                  });
+                                },
+                                onOpenFilters: () => _openFilters(allRounds),
                                 onClearFilters: _clearFilters,
-                              )
-                            else ...[
-                              Container(
-                                width: double.infinity,
-                                padding: const EdgeInsets.all(20),
-                                decoration: BoxDecoration(
-                                  gradient: const LinearGradient(
-                                    colors: [Color(0xFF0F6FFF), _azulMedio],
-                                    begin: Alignment.topLeft,
-                                    end: Alignment.bottomRight,
-                                  ),
-                                  borderRadius: BorderRadius.circular(20),
-                                  boxShadow: [
-                                    BoxShadow(
-                                      color: _azulPrincipal.withValues(
-                                        alpha: 0.24,
+                              ),
+                              const SizedBox(height: 18),
+                              if (rondas.isEmpty)
+                                NoRoundFilterResults(
+                                  onClearFilters: _clearFilters,
+                                )
+                              else ...[
+                                Container(
+                                  width: double.infinity,
+                                  padding: const EdgeInsets.all(20),
+                                  decoration: BoxDecoration(
+                                    gradient: const LinearGradient(
+                                      colors: [Color(0xFF0F6FFF), _azulMedio],
+                                      begin: Alignment.topLeft,
+                                      end: Alignment.bottomRight,
+                                    ),
+                                    borderRadius: BorderRadius.circular(20),
+                                    boxShadow: [
+                                      BoxShadow(
+                                        color: _azulPrincipal.withValues(
+                                          alpha: 0.24,
+                                        ),
+                                        blurRadius: 18,
+                                        offset: const Offset(0, 10),
                                       ),
-                                      blurRadius: 18,
-                                      offset: const Offset(0, 10),
+                                    ],
+                                  ),
+                                  child: Row(
+                                    children: [
+                                      Container(
+                                        width: 62,
+                                        height: 62,
+                                        decoration: BoxDecoration(
+                                          color: Colors.white.withValues(
+                                            alpha: 0.15,
+                                          ),
+                                          borderRadius: BorderRadius.circular(
+                                            18,
+                                          ),
+                                        ),
+                                        child: const Icon(
+                                          Icons.analytics_outlined,
+                                          color: Colors.white,
+                                          size: 34,
+                                        ),
+                                      ),
+                                      const SizedBox(width: 16),
+                                      Expanded(
+                                        child: Column(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.start,
+                                          children: [
+                                            const Text(
+                                              'Cumplimiento general',
+                                              style: TextStyle(
+                                                color: Colors.white70,
+                                                fontSize: 14,
+                                              ),
+                                            ),
+                                            const SizedBox(height: 5),
+                                            Text(
+                                              '$cumplimiento%',
+                                              style: const TextStyle(
+                                                color: Colors.white,
+                                                fontSize: 34,
+                                                fontWeight: FontWeight.bold,
+                                              ),
+                                            ),
+                                            Text(
+                                              '$rondasCompletadas de $totalRondas rondas completadas',
+                                              style: const TextStyle(
+                                                color: Colors.white70,
+                                                fontSize: 13,
+                                              ),
+                                            ),
+                                            const SizedBox(height: 6),
+                                            Text(
+                                              configuration
+                                                  .installationNameDisplay,
+                                              maxLines: 1,
+                                              overflow: TextOverflow.ellipsis,
+                                              style: const TextStyle(
+                                                color: Colors.white,
+                                                fontSize: 12,
+                                                fontWeight: FontWeight.w600,
+                                              ),
+                                            ),
+                                            Text(
+                                              '${configuration.companyDisplay} · $currentUserName',
+                                              maxLines: 1,
+                                              overflow: TextOverflow.ellipsis,
+                                              style: const TextStyle(
+                                                color: Colors.white70,
+                                                fontSize: 11,
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                const SizedBox(height: 20),
+                                Row(
+                                  children: [
+                                    Expanded(
+                                      child: _ReportStatCard(
+                                        title: 'Rondas',
+                                        value: '$totalRondas',
+                                        icon: Icons.shield_rounded,
+                                        color: _azulPrincipal,
+                                        backgroundColor: const Color(
+                                          0xFFEAF2FF,
+                                        ),
+                                      ),
+                                    ),
+                                    const SizedBox(width: 12),
+                                    Expanded(
+                                      child: _ReportStatCard(
+                                        title: 'Puntos',
+                                        value: '$totalPuntos',
+                                        icon: Icons.location_on_rounded,
+                                        color: _verde,
+                                        backgroundColor: const Color(
+                                          0xFFE8F8F0,
+                                        ),
+                                      ),
                                     ),
                                   ],
                                 ),
-                                child: Row(
+                                const SizedBox(height: 12),
+                                Row(
                                   children: [
-                                    Container(
-                                      width: 62,
-                                      height: 62,
-                                      decoration: BoxDecoration(
-                                        color: Colors.white.withValues(
-                                          alpha: 0.15,
+                                    Expanded(
+                                      child: _ReportStatCard(
+                                        title: 'Novedades',
+                                        value: '$totalNovedades',
+                                        icon: Icons.warning_amber_rounded,
+                                        color: _naranja,
+                                        backgroundColor: const Color(
+                                          0xFFFFF4E5,
                                         ),
-                                        borderRadius: BorderRadius.circular(18),
-                                      ),
-                                      child: const Icon(
-                                        Icons.analytics_outlined,
-                                        color: Colors.white,
-                                        size: 34,
                                       ),
                                     ),
-                                    const SizedBox(width: 16),
+                                    const SizedBox(width: 12),
                                     Expanded(
-                                      child: Column(
-                                        crossAxisAlignment:
-                                            CrossAxisAlignment.start,
+                                      child: _ReportStatCard(
+                                        title: 'Tiempo promedio',
+                                        value: formatearDuracion(
+                                          duracionPromedio,
+                                        ),
+                                        icon: Icons.timer_outlined,
+                                        color: const Color(0xFF7A5AF8),
+                                        backgroundColor: const Color(
+                                          0xFFF2F0FF,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                const SizedBox(height: 26),
+                                const Text(
+                                  'Actividad últimos 7 días',
+                                  style: TextStyle(
+                                    color: _azulOscuro,
+                                    fontSize: 20,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                                const SizedBox(height: 14),
+                                Container(
+                                  width: double.infinity,
+                                  padding: const EdgeInsets.fromLTRB(
+                                    16,
+                                    20,
+                                    16,
+                                    16,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: Colors.white,
+                                    borderRadius: BorderRadius.circular(18),
+                                    boxShadow: [
+                                      BoxShadow(
+                                        color: Colors.black.withValues(
+                                          alpha: 0.055,
+                                        ),
+                                        blurRadius: 14,
+                                        offset: const Offset(0, 7),
+                                      ),
+                                    ],
+                                  ),
+                                  child: Column(
+                                    children: [
+                                      SizedBox(
+                                        height: 190,
+                                        child: Row(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.end,
+                                          children: reporteSemanal.map((dia) {
+                                            final int maximo = reporteSemanal
+                                                .fold(1, (maximoActual, item) {
+                                                  return item.totalRounds >
+                                                          maximoActual
+                                                      ? item.totalRounds
+                                                      : maximoActual;
+                                                });
+
+                                            final double altura =
+                                                dia.totalRounds == 0
+                                                ? 8
+                                                : 130 *
+                                                      (dia.totalRounds /
+                                                          maximo);
+
+                                            return Expanded(
+                                              child: _DayBar(
+                                                day: obtenerNombreDia(dia.date),
+                                                total: dia.totalRounds,
+                                                completed: dia.completedRounds,
+                                                noveltyCount: dia.noveltyCount,
+                                                height: altura,
+                                              ),
+                                            );
+                                          }).toList(),
+                                        ),
+                                      ),
+                                      const Divider(height: 28),
+                                      const Row(
+                                        mainAxisAlignment:
+                                            MainAxisAlignment.center,
                                         children: [
-                                          const Text(
-                                            'Cumplimiento general',
-                                            style: TextStyle(
-                                              color: Colors.white70,
-                                              fontSize: 14,
-                                            ),
+                                          _LegendItem(
+                                            color: _azulPrincipal,
+                                            text: 'Rondas',
                                           ),
-                                          const SizedBox(height: 5),
-                                          Text(
-                                            '$cumplimiento%',
-                                            style: const TextStyle(
-                                              color: Colors.white,
-                                              fontSize: 34,
-                                              fontWeight: FontWeight.bold,
-                                            ),
-                                          ),
-                                          Text(
-                                            '$rondasCompletadas de $totalRondas rondas completadas',
-                                            style: const TextStyle(
-                                              color: Colors.white70,
-                                              fontSize: 13,
-                                            ),
-                                          ),
-                                          const SizedBox(height: 6),
-                                          Text(
-                                            configuration
-                                                .installationNameDisplay,
-                                            maxLines: 1,
-                                            overflow: TextOverflow.ellipsis,
-                                            style: const TextStyle(
-                                              color: Colors.white,
-                                              fontSize: 12,
-                                              fontWeight: FontWeight.w600,
-                                            ),
-                                          ),
-                                          Text(
-                                            '${configuration.companyDisplay} · $currentUserName',
-                                            maxLines: 1,
-                                            overflow: TextOverflow.ellipsis,
-                                            style: const TextStyle(
-                                              color: Colors.white70,
-                                              fontSize: 11,
-                                            ),
+                                          SizedBox(width: 18),
+                                          _LegendItem(
+                                            color: _naranja,
+                                            text: 'Con novedades',
                                           ),
                                         ],
                                       ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                              const SizedBox(height: 20),
-                              Row(
-                                children: [
-                                  Expanded(
-                                    child: _ReportStatCard(
-                                      title: 'Rondas',
-                                      value: '$totalRondas',
-                                      icon: Icons.shield_rounded,
-                                      color: _azulPrincipal,
-                                      backgroundColor: const Color(0xFFEAF2FF),
-                                    ),
+                                    ],
                                   ),
-                                  const SizedBox(width: 12),
-                                  Expanded(
-                                    child: _ReportStatCard(
-                                      title: 'Puntos',
-                                      value: '$totalPuntos',
-                                      icon: Icons.location_on_rounded,
-                                      color: _verde,
-                                      backgroundColor: const Color(0xFFE8F8F0),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                              const SizedBox(height: 12),
-                              Row(
-                                children: [
-                                  Expanded(
-                                    child: _ReportStatCard(
-                                      title: 'Novedades',
-                                      value: '$totalNovedades',
-                                      icon: Icons.warning_amber_rounded,
-                                      color: _naranja,
-                                      backgroundColor: const Color(0xFFFFF4E5),
-                                    ),
-                                  ),
-                                  const SizedBox(width: 12),
-                                  Expanded(
-                                    child: _ReportStatCard(
-                                      title: 'Tiempo promedio',
-                                      value: formatearDuracion(
-                                        duracionPromedio,
-                                      ),
-                                      icon: Icons.timer_outlined,
-                                      color: const Color(0xFF7A5AF8),
-                                      backgroundColor: const Color(0xFFF2F0FF),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                              const SizedBox(height: 26),
-                              const Text(
-                                'Actividad últimos 7 días',
-                                style: TextStyle(
-                                  color: _azulOscuro,
-                                  fontSize: 20,
-                                  fontWeight: FontWeight.bold,
                                 ),
-                              ),
-                              const SizedBox(height: 14),
-                              Container(
-                                width: double.infinity,
-                                padding: const EdgeInsets.fromLTRB(
-                                  16,
-                                  20,
-                                  16,
-                                  16,
-                                ),
-                                decoration: BoxDecoration(
-                                  color: Colors.white,
-                                  borderRadius: BorderRadius.circular(18),
-                                  boxShadow: [
-                                    BoxShadow(
-                                      color: Colors.black.withValues(
-                                        alpha: 0.055,
-                                      ),
-                                      blurRadius: 14,
-                                      offset: const Offset(0, 7),
-                                    ),
-                                  ],
-                                ),
-                                child: Column(
+                                const SizedBox(height: 26),
+                                Row(
                                   children: [
-                                    SizedBox(
-                                      height: 190,
-                                      child: Row(
-                                        crossAxisAlignment:
-                                            CrossAxisAlignment.end,
-                                        children: reporteSemanal.map((dia) {
-                                          final int maximo = reporteSemanal
-                                              .fold(1, (maximoActual, item) {
-                                                return item.totalRounds >
-                                                        maximoActual
-                                                    ? item.totalRounds
-                                                    : maximoActual;
-                                              });
-
-                                          final double altura =
-                                              dia.totalRounds == 0
-                                              ? 8
-                                              : 130 *
-                                                    (dia.totalRounds / maximo);
-
-                                          return Expanded(
-                                            child: _DayBar(
-                                              day: obtenerNombreDia(dia.date),
-                                              total: dia.totalRounds,
-                                              completed: dia.completedRounds,
-                                              noveltyCount: dia.noveltyCount,
-                                              height: altura,
-                                            ),
-                                          );
-                                        }).toList(),
-                                      ),
-                                    ),
-                                    const Divider(height: 28),
-                                    const Row(
-                                      mainAxisAlignment:
-                                          MainAxisAlignment.center,
-                                      children: [
-                                        _LegendItem(
-                                          color: _azulPrincipal,
-                                          text: 'Rondas',
-                                        ),
-                                        SizedBox(width: 18),
-                                        _LegendItem(
-                                          color: _naranja,
-                                          text: 'Con novedades',
-                                        ),
-                                      ],
-                                    ),
-                                  ],
-                                ),
-                              ),
-                              const SizedBox(height: 26),
-                              Row(
-                                children: [
-                                  const Expanded(
-                                    child: Text(
-                                      'Últimas rondas',
-                                      style: TextStyle(
-                                        color: _azulOscuro,
-                                        fontSize: 20,
-                                        fontWeight: FontWeight.bold,
-                                      ),
-                                    ),
-                                  ),
-                                  Text(
-                                    '${rondas.length} registros',
-                                    style: const TextStyle(
-                                      color: _grisTexto,
-                                      fontSize: 12,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                              const SizedBox(height: 14),
-                              ...rondas.take(5).map((ronda) {
-                                return _RecentRoundCard(
-                                  date: formatearFecha(ronda.finishedAt),
-                                  schedule:
-                                      '${formatearHora(ronda.startedAt)} - '
-                                      '${formatearHora(ronda.finishedAt)}',
-                                  guardName: ronda.guardName,
-                                  installation: ronda.installation,
-                                  shiftName: ronda.shiftName,
-                                  status: ronda.status,
-                                  points:
-                                      '${ronda.completedPoints}/${ronda.totalPoints}',
-                                  noveltyCount: ronda.noveltyCount,
-                                  noveltyDetail: obtenerResumenNovedades(ronda),
-                                  statusColor: obtenerColorEstado(ronda),
-                                  statusBackground: obtenerFondoEstado(ronda),
-                                  statusIcon: obtenerIconoEstado(ronda),
-                                );
-                              }),
-                              const SizedBox(height: 16),
-                              Container(
-                                padding: const EdgeInsets.all(15),
-                                decoration: BoxDecoration(
-                                  color: const Color(0xFFEAF2FF),
-                                  borderRadius: BorderRadius.circular(15),
-                                ),
-                                child: const Row(
-                                  children: [
-                                    Icon(
-                                      Icons.info_outline_rounded,
-                                      color: _azulPrincipal,
-                                    ),
-                                    SizedBox(width: 11),
-                                    Expanded(
+                                    const Expanded(
                                       child: Text(
-                                        'Los reportes se actualizan automáticamente al finalizar cada ronda.',
+                                        'Últimas rondas',
                                         style: TextStyle(
                                           color: _azulOscuro,
-                                          fontSize: 13,
-                                          height: 1.4,
+                                          fontSize: 20,
+                                          fontWeight: FontWeight.bold,
                                         ),
+                                      ),
+                                    ),
+                                    Text(
+                                      '${rondas.length} registros',
+                                      style: const TextStyle(
+                                        color: _grisTexto,
+                                        fontSize: 12,
                                       ),
                                     ),
                                   ],
                                 ),
-                              ),
+                                const SizedBox(height: 14),
+                                ...rondas.take(5).map((ronda) {
+                                  return _RecentRoundCard(
+                                    date: formatearFecha(ronda.finishedAt),
+                                    schedule:
+                                        '${formatearHora(ronda.startedAt)} - '
+                                        '${formatearHora(ronda.finishedAt)}',
+                                    guardName: ronda.guardName,
+                                    installation: ronda.installation,
+                                    shiftName: ronda.shiftName,
+                                    status: ronda.status,
+                                    points:
+                                        '${ronda.completedPoints}/${ronda.totalPoints}',
+                                    noveltyCount: ronda.noveltyCount,
+                                    noveltyDetail: obtenerResumenNovedades(
+                                      ronda,
+                                    ),
+                                    statusColor: obtenerColorEstado(ronda),
+                                    statusBackground: obtenerFondoEstado(ronda),
+                                    statusIcon: obtenerIconoEstado(ronda),
+                                  );
+                                }),
+                                const SizedBox(height: 16),
+                                Container(
+                                  padding: const EdgeInsets.all(15),
+                                  decoration: BoxDecoration(
+                                    color: const Color(0xFFEAF2FF),
+                                    borderRadius: BorderRadius.circular(15),
+                                  ),
+                                  child: const Row(
+                                    children: [
+                                      Icon(
+                                        Icons.info_outline_rounded,
+                                        color: _azulPrincipal,
+                                      ),
+                                      SizedBox(width: 11),
+                                      Expanded(
+                                        child: Text(
+                                          'Los reportes se actualizan automáticamente al finalizar cada ronda.',
+                                          style: TextStyle(
+                                            color: _azulOscuro,
+                                            fontSize: 13,
+                                            height: 1.4,
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ],
                             ],
-                          ],
-                        ),
+                          ),
+                  ),
                 ),
               ],
             ),
           ),
         );
       },
+    );
+  }
+}
+
+class _ReportsScrollablePlaceholder extends StatelessWidget {
+  final Widget child;
+
+  const _ReportsScrollablePlaceholder({required this.child});
+
+  @override
+  Widget build(BuildContext context) {
+    final double height = MediaQuery.sizeOf(context).height - 160;
+
+    return ListView(
+      physics: const AlwaysScrollableScrollPhysics(),
+      children: [SizedBox(height: height < 360 ? 360 : height, child: child)],
+    );
+  }
+}
+
+class _ReportsLoading extends StatelessWidget {
+  const _ReportsLoading();
+
+  @override
+  Widget build(BuildContext context) {
+    return const _ReportsScrollablePlaceholder(
+      child: Center(child: CircularProgressIndicator(color: _azulPrincipal)),
+    );
+  }
+}
+
+class _ReportsLoadError extends StatelessWidget {
+  final String message;
+  final String? technicalDetail;
+  final Future<void> Function() onRetry;
+
+  const _ReportsLoadError({
+    required this.message,
+    required this.technicalDetail,
+    required this.onRetry,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return _ReportsScrollablePlaceholder(
+      child: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(32),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Icon(Icons.cloud_off_rounded, color: _rojo, size: 58),
+              const SizedBox(height: 16),
+              Text(
+                message,
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  color: _azulOscuro,
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              if (technicalDetail != null && technicalDetail!.isNotEmpty) ...[
+                const SizedBox(height: 10),
+                Text(
+                  'Detalle técnico: $technicalDetail',
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    color: _grisTexto,
+                    fontSize: 12,
+                    height: 1.35,
+                  ),
+                ),
+              ],
+              const SizedBox(height: 14),
+              OutlinedButton.icon(
+                onPressed: onRetry,
+                icon: const Icon(Icons.refresh_rounded),
+                label: const Text('Reintentar'),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }

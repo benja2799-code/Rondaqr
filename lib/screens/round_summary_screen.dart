@@ -4,6 +4,8 @@ import 'package:flutter/material.dart';
 import 'package:rondaqr/auth_models.dart';
 import 'package:rondaqr/round_history.dart';
 import 'package:rondaqr/round_state.dart';
+import 'package:rondaqr/services/supabase_round_service.dart';
+import 'package:rondaqr/services/supabase_service.dart';
 import 'package:rondaqr/session_store.dart';
 import 'package:rondaqr/user_configuration.dart';
 import 'package:rondaqr/work_shifts.dart';
@@ -149,8 +151,14 @@ class _RoundSummaryScreenState extends State<RoundSummaryScreen> {
       });
 
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('No fue posible guardar la ronda. Intenta nuevamente.'),
+        SnackBar(
+          content: Text(
+            error is SupabaseRoundFinishException
+                ? error.message
+                : error is StateError
+                ? error.message.toString()
+                : 'No fue posible guardar la ronda. Intenta nuevamente.',
+          ),
           behavior: SnackBarBehavior.floating,
         ),
       );
@@ -162,9 +170,6 @@ class _RoundSummaryScreenState extends State<RoundSummaryScreen> {
     RoundState roundState,
   ) async {
     final DateTime fechaTermino = DateTime.now();
-
-    await roundState.finishRound();
-
     final DateTime fechaInicio = roundState.roundStartedAt ?? fechaTermino;
 
     final int novedades = roundState.points
@@ -222,21 +227,71 @@ class _RoundSummaryScreenState extends State<RoundSummaryScreen> {
       points: puntosGuardados,
     );
 
-    await RoundHistoryStore.instance.addRound(nuevaRonda);
-    if (nuevaRonda.guardId.isNotEmpty && nuevaRonda.shiftRecordId.isNotEmpty) {
-      await WorkShiftStore.instance.attachRoundToActiveShift(
-        userId: nuevaRonda.guardId,
-        roundId: nuevaRonda.id,
-        noveltyCount: nuevaRonda.noveltyCount,
+    if (SupabaseService.instance.onlineMode) {
+      if (user == null) {
+        throw StateError(
+          'No existe una sesión activa para finalizar la ronda.',
+        );
+      }
+
+      await SupabaseRoundService.instance.finishRound(
+        roundState: roundState,
+        user: user,
+        finishedAt: fechaTermino,
       );
+      await _runOptionalPostSupabaseStep(
+        'marcar ronda finalizada localmente',
+        roundState.finishRound,
+      );
+      await _refreshSupabaseHistoryOpcional(user);
+      await _runOptionalPostSupabaseStep(
+        'limpiar ronda activa local',
+        roundState.resetRound,
+      );
+    } else {
+      await roundState.finishRound();
+      await RoundHistoryStore.instance.addRound(nuevaRonda);
+      if (nuevaRonda.guardId.isNotEmpty &&
+          nuevaRonda.shiftRecordId.isNotEmpty) {
+        await WorkShiftStore.instance.attachRoundToActiveShift(
+          userId: nuevaRonda.guardId,
+          roundId: nuevaRonda.id,
+          noveltyCount: nuevaRonda.noveltyCount,
+        );
+      }
+      await roundState.resetRound();
     }
-    await roundState.resetRound();
 
     if (!context.mounted) {
       return;
     }
 
     mostrarRondaFinalizada(context, roundState);
+  }
+
+  Future<void> _refreshSupabaseHistoryOpcional(AppUser user) async {
+    try {
+      await SupabaseRoundService.instance.loadHistory(user);
+      debugPrint('RondaQR finalizar ronda | historial Supabase refrescado: ok');
+    } catch (error, stackTrace) {
+      debugPrint('Historial local opcional fallÃ³: $error');
+      debugPrintStack(stackTrace: stackTrace);
+    }
+  }
+
+  Future<void> _runOptionalPostSupabaseStep(
+    String description,
+    Future<void> Function() operation,
+  ) async {
+    try {
+      await operation();
+      debugPrint('RondaQR finalizar ronda | $description: ok');
+    } catch (error, stackTrace) {
+      debugPrint(
+        'RondaQR finalizar ronda | $description fallÃ³ (no crÃ­tico): $error',
+      );
+      debugPrintStack(stackTrace: stackTrace);
+    }
   }
 
   void mostrarRondaFinalizada(BuildContext context, RoundState roundState) {
@@ -260,7 +315,7 @@ class _RoundSummaryScreenState extends State<RoundSummaryScreen> {
             ],
           ),
           content: const Text(
-            'La ronda fue guardada correctamente en el historial.',
+            'Ronda finalizada correctamente.',
             textAlign: TextAlign.center,
           ),
           actionsAlignment: MainAxisAlignment.center,

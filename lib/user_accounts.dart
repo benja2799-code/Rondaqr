@@ -36,11 +36,12 @@ class UserAccountStore extends ChangeNotifier {
     List<LocalUserAccount>? savedAccounts, {
     required String installationName,
     required String company,
+    bool seedDefaults = true,
   }) {
     final List<LocalUserAccount> validAccounts = (savedAccounts ?? [])
         .where((account) => account.password.isNotEmpty)
         .toList();
-    final bool seeded = validAccounts.isEmpty;
+    final bool seeded = seedDefaults && validAccounts.isEmpty;
 
     _accounts
       ..clear()
@@ -56,6 +57,15 @@ class UserAccountStore extends ChangeNotifier {
     _initialized = true;
     notifyListeners();
     return seeded;
+  }
+
+  void replaceUsersFromRemote(List<AppUser> users) {
+    _accounts
+      ..clear()
+      ..addAll(users.map((user) => LocalUserAccount(user: user, password: '')));
+
+    _initialized = true;
+    notifyListeners();
   }
 
   static List<LocalUserAccount> defaultAccounts({

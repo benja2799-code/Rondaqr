@@ -17,7 +17,13 @@ class SupabaseAuthService implements AuthRepository {
   });
 
   @override
-  String? get lastNotice => _lastNotice ?? localFallback.lastNotice;
+  String? get lastNotice {
+    if (supabaseService.isConfigured) {
+      return _lastNotice;
+    }
+
+    return _lastNotice ?? localFallback.lastNotice;
+  }
 
   @override
   Future<AppUser> signIn({
@@ -28,6 +34,12 @@ class SupabaseAuthService implements AuthRepository {
 
     final SupabaseClient? client = supabaseService.client;
     if (!supabaseService.isConfigured || client == null) {
+      if (supabaseService.isConfigured) {
+        throw const AuthenticationException(
+          'Se requiere conexión a internet para usar RondaQR v2.0.',
+        );
+      }
+
       return localFallback.signIn(email: email, password: password);
     }
 
@@ -44,7 +56,7 @@ class SupabaseAuthService implements AuthRepository {
         );
       }
 
-      return await _loadProfileForAuthUser(client, authUser);
+      return await loadProfileForAuthUser(client, authUser);
     } on AuthenticationException {
       rethrow;
     } on AuthException catch (error) {
@@ -52,16 +64,24 @@ class SupabaseAuthService implements AuthRepository {
         throw const AuthenticationException('Correo o contraseña incorrectos.');
       }
 
-      return _signInWithLocalFallback(
-        email: email,
-        password: password,
-        originalError: error,
+      debugPrint('Login Supabase no disponible: $error');
+      if (!supabaseService.isLikelyNetworkError(error)) {
+        throw const AuthenticationException(
+          'No fue posible iniciar sesión en Supabase.',
+        );
+      }
+      if (!supabaseService.isLikelyNetworkError(error)) {
+        throw const AuthenticationException(
+          'No fue posible iniciar sesión en Supabase.',
+        );
+      }
+      throw const AuthenticationException(
+        'Se requiere conexión a internet para usar RondaQR v2.0.',
       );
     } catch (error) {
-      return _signInWithLocalFallback(
-        email: email,
-        password: password,
-        originalError: error,
+      debugPrint('Login Supabase no disponible: $error');
+      throw const AuthenticationException(
+        'Se requiere conexión a internet para usar RondaQR v2.0.',
       );
     }
   }
@@ -72,26 +92,34 @@ class SupabaseAuthService implements AuthRepository {
 
     final SupabaseClient? client = supabaseService.client;
     if (!supabaseService.isConfigured || client == null) {
+      if (supabaseService.isConfigured) {
+        _lastNotice =
+            'Sin conexión. Esta versión conectada requiere internet para registrar datos.';
+        return null;
+      }
+
       return localFallback.restoreUser(userId);
     }
 
     try {
       final User? authUser = client.auth.currentUser;
       if (authUser == null || authUser.id != userId) {
-        return await localFallback.restoreUser(userId);
+        return null;
       }
 
-      return await _loadProfileForAuthUser(client, authUser);
+      return await loadProfileForAuthUser(client, authUser);
     } catch (error) {
       debugPrint('No fue posible restaurar perfil Supabase: $error');
-      _lastNotice = 'Sin conexión, usando datos locales.';
-      return await localFallback.restoreUser(userId);
+      _lastNotice =
+          'Sin conexión. Esta versión conectada requiere internet para registrar datos.';
+      return null;
     }
   }
 
   @override
   Future<void> signOut() async {
     _lastNotice = null;
+
     final SupabaseClient? client = supabaseService.client;
     if (client != null) {
       try {
@@ -100,25 +128,22 @@ class SupabaseAuthService implements AuthRepository {
         debugPrint('No fue posible cerrar sesión Supabase: $error');
       }
     }
-    await localFallback.signOut();
+
+    if (!supabaseService.isConfigured) {
+      await localFallback.signOut();
+    }
   }
 
-  Future<AppUser> _loadProfileForAuthUser(
+  Future<AppUser> loadProfileForAuthUser(
     SupabaseClient client,
     User authUser,
   ) async {
     final Map<String, dynamic> profile = await _loadSingleRow(
-      client
-          .from('profiles')
-          .select(
-            'id, full_name, email, role, position, assigned_shift_code, installation_id',
-          )
-          .eq('id', authUser.id)
-          .limit(1),
+      client.from('profiles').select('*').eq('id', authUser.id).limit(1),
       missingMessage: 'No existe perfil vinculado para este usuario.',
     );
 
-    final String installationId = _readText(profile, 'installation_id');
+    final String installationId = readSupabaseText(profile, 'installation_id');
     Map<String, dynamic> installation = {};
 
     if (installationId.isNotEmpty) {
@@ -136,62 +161,11 @@ class SupabaseAuthService implements AuthRepository {
       }
     }
 
-    final AppRole role = _parseRole(_readText(profile, 'role'));
-    final String shiftCode = _readText(profile, 'assigned_shift_code');
-    final String normalizedShiftId = _normalizeShiftId(shiftCode);
-    final String shiftDisplay = _shiftDisplayForCode(shiftCode);
-    final String profileEmail = _readText(profile, 'email');
-    final String installationName = _firstText(installation, [
-      'name',
-      'installation_name',
-      'display_name',
-    ]);
-    final String company = _firstText(installation, [
-      'company',
-      'company_name',
-      'business_name',
-    ]);
-
-    return AppUser(
-      id: authUser.id,
-      email: profileEmail.isNotEmpty ? profileEmail : authUser.email ?? '',
-      displayName: _readText(profile, 'full_name').isNotEmpty
-          ? _readText(profile, 'full_name')
-          : authUser.email ?? 'Usuario Supabase',
-      identifier: authUser.id,
-      jobTitle: _readText(profile, 'position').isNotEmpty
-          ? _readText(profile, 'position')
-          : role.label,
-      installationId: installationId,
-      installationName: installationName.isNotEmpty
-          ? installationName
-          : 'Instalación',
-      company: company.isNotEmpty ? company : 'LG Seguridad SPA',
-      shiftId: normalizedShiftId,
-      shift: shiftDisplay,
-      role: role,
-      isActive: true,
+    return appUserFromSupabaseProfile(
+      profile: profile,
+      authUser: authUser,
+      installation: installation,
     );
-  }
-
-  Future<AppUser> _signInWithLocalFallback({
-    required String email,
-    required String password,
-    required Object originalError,
-  }) async {
-    try {
-      final AppUser localUser = await localFallback.signIn(
-        email: email,
-        password: password,
-      );
-      debugPrint('Login Supabase no disponible, usando local: $originalError');
-      _lastNotice = 'Sin conexión, usando datos locales.';
-      return localUser;
-    } on AuthenticationException {
-      throw const AuthenticationException(
-        'Sin conexión, usando datos locales. Las credenciales locales no coinciden.',
-      );
-    }
   }
 
   bool _isCredentialError(AuthException error) {
@@ -220,68 +194,132 @@ class SupabaseAuthService implements AuthRepository {
 
     return Map<String, dynamic>.from(first);
   }
+}
 
-  AppRole _parseRole(String value) {
-    final String normalized = value.trim().toLowerCase();
+AppUser appUserFromSupabaseProfile({
+  required Map<String, dynamic> profile,
+  required User? authUser,
+  required Map<String, dynamic> installation,
+}) {
+  final AppRole role = parseSupabaseRole(readSupabaseText(profile, 'role'));
+  final String shiftCode = readSupabaseText(profile, 'assigned_shift_code');
+  final String normalizedShiftId = normalizeSupabaseShiftId(shiftCode);
+  final String shiftDisplay = shiftDisplayForSupabaseCode(shiftCode);
+  final String profileEmail = readSupabaseText(profile, 'email');
+  final String installationName = firstSupabaseText(installation, [
+    'name',
+    'installation_name',
+    'display_name',
+  ]);
+  final String company = firstSupabaseText(installation, [
+    'company',
+    'company_name',
+    'business_name',
+  ]);
+  final String authUserId = authUser?.id ?? readSupabaseText(profile, 'id');
+  final String authEmail = authUser?.email ?? '';
+  final String fullName = readSupabaseText(profile, 'full_name');
 
-    if (normalized == 'administrator' ||
-        normalized == 'admin' ||
-        normalized == 'administrador') {
-      return AppRole.administrator;
-    }
+  return AppUser(
+    id: authUserId,
+    email: profileEmail.isNotEmpty ? profileEmail : authEmail,
+    displayName: fullName.isNotEmpty
+        ? fullName
+        : profileEmail.isNotEmpty
+        ? profileEmail
+        : authEmail.isNotEmpty
+        ? authEmail
+        : 'Usuario Supabase',
+    identifier: authUserId,
+    jobTitle: readSupabaseText(profile, 'position').isNotEmpty
+        ? readSupabaseText(profile, 'position')
+        : role.label,
+    installationId: readSupabaseText(profile, 'installation_id'),
+    installationName: installationName.isNotEmpty
+        ? installationName
+        : 'Instalación',
+    company: company.isNotEmpty ? company : 'LG Seguridad SPA',
+    shiftId: normalizedShiftId,
+    shift: shiftDisplay,
+    role: role,
+    isActive: true,
+  );
+}
 
-    if (normalized == 'guard' ||
-        normalized == 'guardia' ||
-        normalized == 'security_guard') {
-      return AppRole.guard;
-    }
+AppRole parseSupabaseRole(String value) {
+  final String normalized = value.trim().toLowerCase();
 
-    throw const AuthenticationException(
-      'El perfil no tiene un rol válido en Supabase.',
-    );
+  if (normalized == 'administrator' ||
+      normalized == 'admin' ||
+      normalized == 'administrador') {
+    return AppRole.administrator;
   }
 
-  String _normalizeShiftId(String code) {
-    final String normalized = code.trim().toLowerCase();
-
-    if (normalized.contains('day') || normalized.contains('dia')) {
-      return 'shift_day';
-    }
-
-    if (normalized.contains('night') || normalized.contains('noche')) {
-      return 'shift_night';
-    }
-
-    return code.trim();
+  if (normalized == 'guard' ||
+      normalized == 'guardia' ||
+      normalized == 'security_guard') {
+    return AppRole.guard;
   }
 
-  String _shiftDisplayForCode(String code) {
-    final String normalized = code.trim().toLowerCase();
-
-    if (normalized.contains('day') || normalized.contains('dia')) {
-      return 'Turno Día · 08:00 - 20:00';
-    }
-
-    if (normalized.contains('night') || normalized.contains('noche')) {
-      return 'Turno Noche · 20:00 - 08:00';
-    }
-
-    return code.trim().isEmpty ? 'Sin turno asignado' : code.trim();
+  if (normalized == 'supervisor') {
+    return AppRole.supervisor;
   }
 
-  String _readText(Map<String, dynamic> json, String key) {
-    final dynamic value = json[key];
-    return value == null ? '' : value.toString().trim();
+  throw const AuthenticationException(
+    'El perfil no tiene un rol válido en Supabase.',
+  );
+}
+
+String normalizeSupabaseShiftId(String code) {
+  final String normalized = code.trim().toLowerCase();
+
+  if (normalized == 'day' ||
+      normalized == 'dia' ||
+      normalized == 'día' ||
+      normalized.contains('day')) {
+    return 'shift_day';
   }
 
-  String _firstText(Map<String, dynamic> json, List<String> keys) {
-    for (final String key in keys) {
-      final String value = _readText(json, key);
-      if (value.isNotEmpty) {
-        return value;
-      }
+  if (normalized == 'night' ||
+      normalized == 'noche' ||
+      normalized.contains('night')) {
+    return 'shift_night';
+  }
+
+  return code.trim();
+}
+
+String shiftDisplayForSupabaseCode(String code) {
+  final String normalized = code.trim().toLowerCase();
+
+  if (normalized == 'day' ||
+      normalized == 'dia' ||
+      normalized == 'día' ||
+      normalized.contains('day')) {
+    return 'Turno Día · 08:00 - 20:00';
+  }
+
+  if (normalized == 'night' ||
+      normalized == 'noche' ||
+      normalized.contains('night')) {
+    return 'Turno Noche · 20:00 - 08:00';
+  }
+
+  return code.trim().isEmpty ? 'Sin turno asignado' : code.trim();
+}
+
+String readSupabaseText(Map<String, dynamic> json, String key) {
+  final dynamic value = json[key];
+  return value == null ? '' : value.toString().trim();
+}
+
+String firstSupabaseText(Map<String, dynamic> json, List<String> keys) {
+  for (final String key in keys) {
+    final String value = readSupabaseText(json, key);
+    if (value.isNotEmpty) {
+      return value;
     }
-
-    return '';
   }
+
+  return '';
 }

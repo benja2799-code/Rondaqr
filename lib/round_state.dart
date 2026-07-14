@@ -16,6 +16,7 @@ class RoundPoint {
   String? noveltyCategory;
   String? noveltySeverity;
   String? noveltyPhotoPath;
+  String? onlineRoundPointId;
   DateTime? completedAt;
 
   RoundPoint({
@@ -31,6 +32,7 @@ class RoundPoint {
     this.noveltyCategory,
     this.noveltySeverity,
     this.noveltyPhotoPath,
+    this.onlineRoundPointId,
     this.completedAt,
   });
 
@@ -47,6 +49,7 @@ class ActiveRoundPointSnapshot {
   final String? noveltyCategory;
   final String? noveltySeverity;
   final String? noveltyPhotoPath;
+  final String? onlineRoundPointId;
   final DateTime? completedAt;
   final String? id;
   final String? qrIdentifier;
@@ -62,6 +65,7 @@ class ActiveRoundPointSnapshot {
     this.noveltyCategory,
     this.noveltySeverity,
     this.noveltyPhotoPath,
+    this.onlineRoundPointId,
     required this.completedAt,
     this.id,
     this.qrIdentifier,
@@ -96,6 +100,8 @@ class RoundOperationalContext {
   final String shiftScheduledStart;
   final String shiftScheduledEnd;
   final DateTime shiftStartedAt;
+  final String onlineRoundId;
+  final String onlineRoundLocalId;
 
   const RoundOperationalContext({
     required this.userId,
@@ -108,6 +114,8 @@ class RoundOperationalContext {
     required this.shiftScheduledStart,
     required this.shiftScheduledEnd,
     required this.shiftStartedAt,
+    this.onlineRoundId = '',
+    this.onlineRoundLocalId = '',
   });
 }
 
@@ -178,6 +186,7 @@ class RoundState extends ChangeNotifier {
           noveltyCategory: point.noveltyCategory,
           noveltySeverity: point.noveltySeverity,
           noveltyPhotoPath: point.noveltyPhotoPath,
+          onlineRoundPointId: point.onlineRoundPointId,
           completedAt: point.completedAt,
         );
       }).toList(),
@@ -242,6 +251,9 @@ class RoundState extends ChangeNotifier {
             noveltyPhotoPath: savedPoint.completed && savedPoint.hasNovelty
                 ? savedPoint.noveltyPhotoPath
                 : null,
+            onlineRoundPointId: savedPoint.completed
+                ? savedPoint.onlineRoundPointId
+                : null,
             completedAt: savedPoint.completed ? savedPoint.completedAt : null,
           );
         }),
@@ -278,6 +290,8 @@ class RoundState extends ChangeNotifier {
     String? noveltyCategory,
     String? noveltySeverity,
     String? noveltyPhotoPath,
+    String? onlineRoundPointId,
+    DateTime? completedAt,
   }) async {
     final int index = points.indexWhere((point) => point.id == pointId);
 
@@ -291,7 +305,8 @@ class RoundState extends ChangeNotifier {
     points[index].noveltyCategory = hasNovelty ? noveltyCategory : null;
     points[index].noveltySeverity = hasNovelty ? noveltySeverity : null;
     points[index].noveltyPhotoPath = hasNovelty ? noveltyPhotoPath : null;
-    points[index].completedAt = DateTime.now();
+    points[index].onlineRoundPointId = onlineRoundPointId;
+    points[index].completedAt = completedAt ?? DateTime.now();
 
     notifyListeners();
 
@@ -361,6 +376,8 @@ class RoundState extends ChangeNotifier {
       shiftScheduledStart: scheduledStart,
       shiftScheduledEnd: scheduledEnd,
       shiftStartedAt: current.shiftStartedAt,
+      onlineRoundId: current.onlineRoundId,
+      onlineRoundLocalId: current.onlineRoundLocalId,
     );
     notifyListeners();
     await _saveActiveRound();
@@ -394,7 +411,34 @@ class RoundState extends ChangeNotifier {
       shiftScheduledStart: current.shiftScheduledStart,
       shiftScheduledEnd: current.shiftScheduledEnd,
       shiftStartedAt: current.shiftStartedAt,
+      onlineRoundId: current.onlineRoundId,
+      onlineRoundLocalId: current.onlineRoundLocalId,
     );
+    notifyListeners();
+    await _saveActiveRound();
+  }
+
+  Future<void> updateOnlineRoundId(String onlineRoundId) async {
+    final RoundOperationalContext? current = operationalContext;
+    if (current == null || current.onlineRoundId == onlineRoundId) {
+      return;
+    }
+
+    operationalContext = RoundOperationalContext(
+      userId: current.userId,
+      guardName: current.guardName,
+      role: current.role,
+      installation: current.installation,
+      shiftRecordId: current.shiftRecordId,
+      shiftId: current.shiftId,
+      shiftName: current.shiftName,
+      shiftScheduledStart: current.shiftScheduledStart,
+      shiftScheduledEnd: current.shiftScheduledEnd,
+      shiftStartedAt: current.shiftStartedAt,
+      onlineRoundId: onlineRoundId,
+      onlineRoundLocalId: current.onlineRoundLocalId,
+    );
+
     notifyListeners();
     await _saveActiveRound();
   }
@@ -481,6 +525,7 @@ class RoundState extends ChangeNotifier {
       point.noveltyCategory = null;
       point.noveltySeverity = null;
       point.noveltyPhotoPath = null;
+      point.onlineRoundPointId = null;
       point.completedAt = null;
     }
   }

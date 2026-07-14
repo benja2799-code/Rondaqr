@@ -1,7 +1,11 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import 'app_routes.dart';
 import 'auth_models.dart';
+import 'services/supabase_data_coordinator.dart';
+import 'services/supabase_service.dart';
 import 'session_store.dart';
 
 class SessionGuard extends StatelessWidget {
@@ -18,6 +22,10 @@ class SessionGuard extends StatelessWidget {
       builder: (context, _) {
         if (!sessionStore.isAuthenticated) {
           return const AccessDeniedScreen(sessionRequired: true);
+        }
+
+        if (SupabaseService.instance.onlineMode) {
+          unawaited(SupabaseDataCoordinator.instance.refreshCurrentUserData());
         }
 
         return child;

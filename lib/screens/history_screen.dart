@@ -4,6 +4,8 @@ import 'package:flutter/material.dart';
 import 'package:rondaqr/auth_models.dart';
 import 'package:rondaqr/round_history.dart';
 import 'package:rondaqr/round_history_filters.dart';
+import 'package:rondaqr/services/supabase_round_service.dart';
+import 'package:rondaqr/services/supabase_service.dart';
 import 'package:rondaqr/session_store.dart';
 import 'package:rondaqr/widgets/round_history_filters.dart';
 
@@ -25,11 +27,84 @@ class _HistoryScreenState extends State<HistoryScreen> {
 
   final TextEditingController _searchController = TextEditingController();
   RoundHistoryFilters _filters = RoundHistoryFilters();
+  bool _loadingOnlineHistory = false;
+  bool _onlineHistoryLoaded = false;
+  String? _onlineHistoryError;
+  String? _onlineHistoryTechnicalDetail;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _loadOnlineHistory();
+    });
+  }
 
   @override
   void dispose() {
     _searchController.dispose();
     super.dispose();
+  }
+
+  Future<void> _loadOnlineHistory() async {
+    if (!SupabaseService.instance.onlineMode) {
+      return;
+    }
+
+    final AppUser? user = SessionStore.instance.currentUser;
+    if (user == null || _loadingOnlineHistory) {
+      return;
+    }
+
+    setState(() {
+      _loadingOnlineHistory = true;
+      _onlineHistoryError = null;
+      _onlineHistoryTechnicalDetail = null;
+    });
+
+    try {
+      await SupabaseRoundService.instance.loadCompletedRoundsForHistory(
+        user,
+        caller: 'HistoryScreen',
+      );
+
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _onlineHistoryLoaded = true;
+      });
+    } catch (error, stackTrace) {
+      debugPrint('No se pudo cargar el historial desde Supabase: $error');
+      debugPrintStack(stackTrace: stackTrace);
+
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _onlineHistoryLoaded = true;
+        _onlineHistoryError = error is SupabaseHistoryLoadException
+            ? error.message
+            : 'No se pudo cargar el historial desde Supabase.';
+        _onlineHistoryTechnicalDetail = error is SupabaseHistoryLoadException
+            ? error.technicalDetail
+            : error.toString();
+      });
+    } finally {
+      if (mounted) {
+        setState(() {
+          _loadingOnlineHistory = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _refreshHistory() async {
+    if (SupabaseService.instance.onlineMode) {
+      await _loadOnlineHistory();
+    }
   }
 
   void _clearFilters() {
@@ -390,17 +465,18 @@ class _HistoryScreenState extends State<HistoryScreen> {
       animation: Listenable.merge([historyStore, sessionStore]),
       builder: (context, _) {
         final AppUser? user = sessionStore.currentUser;
-        final bool isAdministrator = user?.role == AppRole.administrator;
+        final bool onlineMode = SupabaseService.instance.onlineMode;
         final List<RoundHistoryItem> allRounds = historyStore.rounds.where((
           round,
         ) {
-          if (isAdministrator) {
+          if (user == null) {
+            return false;
+          }
+          if (user.role != AppRole.guard) {
             return true;
           }
-          return user != null &&
-              (round.guardId == user.id ||
-                  (round.guardId.isEmpty &&
-                      round.guardName == user.displayName));
+          return round.guardId == user.id ||
+              (round.guardId.isEmpty && round.guardName == user.displayName);
         }).toList();
         final List<RoundHistoryItem> rondas = _filters.apply(allRounds);
         final int completedRounds = rondas
@@ -447,7 +523,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
                           ),
                         ),
                       ),
-                      if (isAdministrator)
+                      if (user?.role == AppRole.administrator && !onlineMode)
                         IconButton(
                           onPressed: () {
                             confirmarEliminarHistorial(context, historyStore);
@@ -463,152 +539,262 @@ class _HistoryScreenState extends State<HistoryScreen> {
                   ),
                 ),
                 Expanded(
-                  child: allRounds.isEmpty
-                      ? const _EmptyHistory()
-                      : ListView(
-                          padding: const EdgeInsets.all(20),
-                          children: [
-                            RoundHistoryFilterPanel(
-                              searchController: _searchController,
-                              resultCount: rondas.length,
-                              activeFilterCount: _filters.activeCount,
-                              hasActiveFilters: _filters.isActive,
-                              onSearchChanged: (value) {
-                                setState(() {
-                                  _filters.searchText = value;
-                                });
-                              },
-                              onOpenFilters: () => _openFilters(allRounds),
-                              onClearFilters: _clearFilters,
-                            ),
-                            const SizedBox(height: 18),
-                            if (rondas.isEmpty)
-                              NoRoundFilterResults(
+                  child: RefreshIndicator(
+                    onRefresh: _refreshHistory,
+                    child:
+                        onlineMode &&
+                            !_onlineHistoryLoaded &&
+                            _loadingOnlineHistory
+                        ? const _HistoryLoading()
+                        : _onlineHistoryError != null
+                        ? _HistoryLoadError(
+                            message: _onlineHistoryError!,
+                            technicalDetail: _onlineHistoryTechnicalDetail,
+                            onRetry: _loadOnlineHistory,
+                          )
+                        : allRounds.isEmpty
+                        ? const _HistoryScrollablePlaceholder(
+                            child: _EmptyHistory(),
+                          )
+                        : ListView(
+                            padding: const EdgeInsets.all(20),
+                            children: [
+                              RoundHistoryFilterPanel(
+                                searchController: _searchController,
+                                resultCount: rondas.length,
+                                activeFilterCount: _filters.activeCount,
+                                hasActiveFilters: _filters.isActive,
+                                onSearchChanged: (value) {
+                                  setState(() {
+                                    _filters.searchText = value;
+                                  });
+                                },
+                                onOpenFilters: () => _openFilters(allRounds),
                                 onClearFilters: _clearFilters,
-                              )
-                            else ...[
-                              Container(
-                                width: double.infinity,
-                                padding: const EdgeInsets.all(18),
-                                decoration: BoxDecoration(
-                                  gradient: const LinearGradient(
-                                    colors: [Color(0xFF0F6FFF), azulMedio],
-                                    begin: Alignment.topLeft,
-                                    end: Alignment.bottomRight,
-                                  ),
-                                  borderRadius: BorderRadius.circular(20),
-                                  boxShadow: [
-                                    BoxShadow(
-                                      color: azulPrincipal.withValues(
-                                        alpha: 0.22,
-                                      ),
-                                      blurRadius: 18,
-                                      offset: const Offset(0, 10),
+                              ),
+                              const SizedBox(height: 18),
+                              if (rondas.isEmpty)
+                                NoRoundFilterResults(
+                                  onClearFilters: _clearFilters,
+                                )
+                              else ...[
+                                Container(
+                                  width: double.infinity,
+                                  padding: const EdgeInsets.all(18),
+                                  decoration: BoxDecoration(
+                                    gradient: const LinearGradient(
+                                      colors: [Color(0xFF0F6FFF), azulMedio],
+                                      begin: Alignment.topLeft,
+                                      end: Alignment.bottomRight,
                                     ),
-                                  ],
+                                    borderRadius: BorderRadius.circular(20),
+                                    boxShadow: [
+                                      BoxShadow(
+                                        color: azulPrincipal.withValues(
+                                          alpha: 0.22,
+                                        ),
+                                        blurRadius: 18,
+                                        offset: const Offset(0, 10),
+                                      ),
+                                    ],
+                                  ),
+                                  child: Row(
+                                    children: [
+                                      const Icon(
+                                        Icons.history_rounded,
+                                        color: Colors.white,
+                                        size: 38,
+                                      ),
+                                      const SizedBox(width: 14),
+                                      Expanded(
+                                        child: Column(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.start,
+                                          children: [
+                                            const Text(
+                                              'Historial de actividad',
+                                              style: TextStyle(
+                                                color: Colors.white,
+                                                fontSize: 19,
+                                                fontWeight: FontWeight.bold,
+                                              ),
+                                            ),
+                                            const SizedBox(height: 5),
+                                            Text(
+                                              '${rondas.length} ${rondas.length == 1 ? 'ronda encontrada' : 'rondas encontradas'}',
+                                              style: const TextStyle(
+                                                color: Colors.white70,
+                                                fontSize: 14,
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                    ],
+                                  ),
                                 ),
-                                child: Row(
+                                const SizedBox(height: 22),
+                                Row(
                                   children: [
-                                    const Icon(
-                                      Icons.history_rounded,
-                                      color: Colors.white,
-                                      size: 38,
-                                    ),
-                                    const SizedBox(width: 14),
                                     Expanded(
-                                      child: Column(
-                                        crossAxisAlignment:
-                                            CrossAxisAlignment.start,
-                                        children: [
-                                          const Text(
-                                            'Historial de actividad',
-                                            style: TextStyle(
-                                              color: Colors.white,
-                                              fontSize: 19,
-                                              fontWeight: FontWeight.bold,
-                                            ),
-                                          ),
-                                          const SizedBox(height: 5),
-                                          Text(
-                                            '${rondas.length} ${rondas.length == 1 ? 'ronda encontrada' : 'rondas encontradas'}',
-                                            style: const TextStyle(
-                                              color: Colors.white70,
-                                              fontSize: 14,
-                                            ),
-                                          ),
-                                        ],
+                                      child: _HistoryStat(
+                                        value: '${rondas.length}',
+                                        label: 'Total',
+                                        color: azulPrincipal,
+                                        backgroundColor: const Color(
+                                          0xFFEAF2FF,
+                                        ),
+                                      ),
+                                    ),
+                                    const SizedBox(width: 10),
+                                    Expanded(
+                                      child: _HistoryStat(
+                                        value: '$completedRounds',
+                                        label: 'Completadas',
+                                        color: verde,
+                                        backgroundColor: const Color(
+                                          0xFFE8F8F0,
+                                        ),
+                                      ),
+                                    ),
+                                    const SizedBox(width: 10),
+                                    Expanded(
+                                      child: _HistoryStat(
+                                        value: '$roundsWithNovelty',
+                                        label: 'Novedades',
+                                        color: naranja,
+                                        backgroundColor: const Color(
+                                          0xFFFFF4E5,
+                                        ),
                                       ),
                                     ),
                                   ],
                                 ),
-                              ),
-                              const SizedBox(height: 22),
-                              Row(
-                                children: [
-                                  Expanded(
-                                    child: _HistoryStat(
-                                      value: '${rondas.length}',
-                                      label: 'Total',
-                                      color: azulPrincipal,
-                                      backgroundColor: const Color(0xFFEAF2FF),
-                                    ),
+                                const SizedBox(height: 24),
+                                const Text(
+                                  'Rondas recientes',
+                                  style: TextStyle(
+                                    color: azulOscuro,
+                                    fontSize: 20,
+                                    fontWeight: FontWeight.bold,
                                   ),
-                                  const SizedBox(width: 10),
-                                  Expanded(
-                                    child: _HistoryStat(
-                                      value: '$completedRounds',
-                                      label: 'Completadas',
-                                      color: verde,
-                                      backgroundColor: const Color(0xFFE8F8F0),
-                                    ),
-                                  ),
-                                  const SizedBox(width: 10),
-                                  Expanded(
-                                    child: _HistoryStat(
-                                      value: '$roundsWithNovelty',
-                                      label: 'Novedades',
-                                      color: naranja,
-                                      backgroundColor: const Color(0xFFFFF4E5),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                              const SizedBox(height: 24),
-                              const Text(
-                                'Rondas recientes',
-                                style: TextStyle(
-                                  color: azulOscuro,
-                                  fontSize: 20,
-                                  fontWeight: FontWeight.bold,
                                 ),
-                              ),
-                              const SizedBox(height: 14),
-                              ...rondas.map((ronda) {
-                                return _HistoryCard(
-                                  ronda: ronda,
-                                  formattedDate: formatearFecha(
-                                    ronda.finishedAt,
-                                  ),
-                                  formattedSchedule:
-                                      '${formatearHora(ronda.startedAt)} - '
-                                      '${formatearHora(ronda.finishedAt)}',
-                                  statusColor: obtenerColorEstado(ronda),
-                                  statusBackground: obtenerFondoEstado(ronda),
-                                  statusIcon: obtenerIconoEstado(ronda),
-                                  onTap: () {
-                                    mostrarDetalle(context, ronda);
-                                  },
-                                );
-                              }),
+                                const SizedBox(height: 14),
+                                ...rondas.map((ronda) {
+                                  return _HistoryCard(
+                                    ronda: ronda,
+                                    formattedDate: formatearFecha(
+                                      ronda.finishedAt,
+                                    ),
+                                    formattedSchedule:
+                                        '${formatearHora(ronda.startedAt)} - '
+                                        '${formatearHora(ronda.finishedAt)}',
+                                    statusColor: obtenerColorEstado(ronda),
+                                    statusBackground: obtenerFondoEstado(ronda),
+                                    statusIcon: obtenerIconoEstado(ronda),
+                                    onTap: () {
+                                      mostrarDetalle(context, ronda);
+                                    },
+                                  );
+                                }),
+                              ],
                             ],
-                          ],
-                        ),
+                          ),
+                  ),
                 ),
               ],
             ),
           ),
         );
       },
+    );
+  }
+}
+
+class _HistoryScrollablePlaceholder extends StatelessWidget {
+  final Widget child;
+
+  const _HistoryScrollablePlaceholder({required this.child});
+
+  @override
+  Widget build(BuildContext context) {
+    final double height = MediaQuery.sizeOf(context).height - 160;
+
+    return ListView(
+      physics: const AlwaysScrollableScrollPhysics(),
+      children: [SizedBox(height: height < 360 ? 360 : height, child: child)],
+    );
+  }
+}
+
+class _HistoryLoading extends StatelessWidget {
+  const _HistoryLoading();
+
+  @override
+  Widget build(BuildContext context) {
+    return const _HistoryScrollablePlaceholder(
+      child: Center(child: CircularProgressIndicator(color: Color(0xFF0866FF))),
+    );
+  }
+}
+
+class _HistoryLoadError extends StatelessWidget {
+  final String message;
+  final String? technicalDetail;
+  final Future<void> Function() onRetry;
+
+  const _HistoryLoadError({
+    required this.message,
+    required this.technicalDetail,
+    required this.onRetry,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return _HistoryScrollablePlaceholder(
+      child: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(32),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Icon(
+                Icons.cloud_off_rounded,
+                color: Color(0xFFD92D20),
+                size: 58,
+              ),
+              const SizedBox(height: 16),
+              Text(
+                message,
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  color: Color(0xFF061B44),
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              if (technicalDetail != null && technicalDetail!.isNotEmpty) ...[
+                const SizedBox(height: 10),
+                Text(
+                  'Detalle técnico: $technicalDetail',
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    color: Color(0xFF667085),
+                    fontSize: 12,
+                    height: 1.35,
+                  ),
+                ),
+              ],
+              const SizedBox(height: 14),
+              OutlinedButton.icon(
+                onPressed: onRetry,
+                icon: const Icon(Icons.refresh_rounded),
+                label: const Text('Reintentar'),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }

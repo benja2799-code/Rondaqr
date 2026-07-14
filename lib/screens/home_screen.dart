@@ -6,6 +6,10 @@ import '../auth_models.dart';
 import '../round_history.dart';
 import '../round_state.dart';
 import '../services/sync_status.dart';
+import '../services/supabase_data_coordinator.dart';
+import '../services/supabase_round_service.dart';
+import '../services/supabase_service.dart';
+import '../services/supabase_shift_service.dart';
 import '../session_store.dart';
 import '../user_accounts.dart';
 import '../user_configuration.dart';
@@ -27,8 +31,48 @@ class HomeScreen extends StatelessWidget {
     final SessionStore sessionStore = SessionStore.instance;
     final WorkShiftStore shiftStore = WorkShiftStore.instance;
     final AppUser? user = sessionStore.currentUser;
+    final RoundState roundState = RoundState.instance;
+    WorkShiftRecord? activeShift = user == null
+        ? null
+        : shiftStore.activeForUser(user.id);
+    final String? authUid =
+        SupabaseService.instance.client?.auth.currentUser?.id;
+    final String localRoundId = SupabaseRoundService.instance.buildRoundLocalId(
+      userId: user?.id ?? 'sin_usuario',
+    );
 
-    if (user?.role != AppRole.guard ||
+    debugPrint(
+      'RondaQR iniciar ronda | usuario activo: '
+      'id=${user?.id ?? 'null'}, '
+      'nombre=${user?.displayName ?? 'null'}, '
+      'email=${user?.email ?? 'null'}, '
+      'rol=${user?.role.name ?? 'null'}',
+    );
+    debugPrint('RondaQR iniciar ronda | auth.uid: ${authUid ?? 'null'}');
+    debugPrint(
+      'RondaQR iniciar ronda | installation_id: '
+      '${user?.installationId ?? 'null'}',
+    );
+    debugPrint(
+      'RondaQR iniciar ronda | turno activo local: '
+      '${activeShift == null ? 'null' : 'id=${activeShift.id}, shiftId=${activeShift.shiftId}, status=${activeShift.statusLabel}, isActive=${activeShift.isActive}'}',
+    );
+    debugPrint(
+      'RondaQR iniciar ronda | id real Supabase work_shifts: '
+      '${activeShift?.id ?? 'null'} | uuidValido=${activeShift == null ? false : SupabaseRoundService.instance.isSupabaseUuid(activeShift.id)}',
+    );
+    debugPrint(
+      'RondaQR iniciar ronda | status turno activo: '
+      '${activeShift?.statusLabel ?? 'null'}',
+    );
+    debugPrint(
+      'RondaQR iniciar ronda | total puntos control: '
+      '${roundState.totalPoints}',
+    );
+    debugPrint('RondaQR iniciar ronda | local_id ronda: $localRoundId');
+
+    if (user == null ||
+        user.role != AppRole.guard ||
         !sessionStore.can(AppPermission.manageRounds) ||
         !sessionStore.can(AppPermission.scanQr)) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -39,8 +83,42 @@ class HomeScreen extends StatelessWidget {
       );
       return;
     }
+    final AppUser activeUser = user;
 
-    final WorkShiftRecord? activeShift = shiftStore.activeForUser(user!.id);
+    if (SupabaseService.instance.onlineMode &&
+        (activeShift == null ||
+            !SupabaseRoundService.instance.isSupabaseUuid(activeShift.id))) {
+      try {
+        debugPrint(
+          'RondaQR iniciar ronda | refrescando turno activo desde Supabase...',
+        );
+        await SupabaseShiftService.instance.refreshForUser(activeUser);
+        activeShift = shiftStore.activeForUser(activeUser.id);
+        debugPrint(
+          'RondaQR iniciar ronda | turno activo tras refrescar: '
+          '${activeShift == null ? 'null' : 'id=${activeShift.id}, shiftId=${activeShift.shiftId}, status=${activeShift.statusLabel}, isActive=${activeShift.isActive}, uuidValido=${SupabaseRoundService.instance.isSupabaseUuid(activeShift.id)}'}',
+        );
+      } catch (error) {
+        if (!context.mounted) {
+          return;
+        }
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              error is StateError
+                  ? error.message.toString()
+                  : 'No fue posible validar el turno activo en Supabase.',
+            ),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+        return;
+      }
+    }
+
+    if (!context.mounted) {
+      return;
+    }
 
     if (activeShift == null) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -52,7 +130,16 @@ class HomeScreen extends StatelessWidget {
       return;
     }
 
-    final RoundState roundState = RoundState.instance;
+    if (SupabaseService.instance.onlineMode &&
+        !SupabaseRoundService.instance.isSupabaseUuid(activeShift.id)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Error al asociar la ronda con el turno activo.'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
 
     if (roundState.totalPoints == 0) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -86,20 +173,54 @@ class HomeScreen extends StatelessWidget {
       return;
     }
 
-    await roundState.startRound(
-      roundContext: RoundOperationalContext(
-        userId: user.id,
-        guardName: user.displayName,
-        role: user.role.label,
-        installation: user.installationName,
-        shiftRecordId: activeShift.id,
-        shiftId: activeShift.shiftId,
-        shiftName: activeShift.shiftName,
-        shiftScheduledStart: activeShift.scheduledStart,
-        shiftScheduledEnd: activeShift.scheduledEnd,
-        shiftStartedAt: activeShift.actualStartedAt,
-      ),
-    );
+    try {
+      String onlineRoundId = roundState.operationalContext?.onlineRoundId ?? '';
+      if (SupabaseService.instance.onlineMode && onlineRoundId.isEmpty) {
+        onlineRoundId = await SupabaseRoundService.instance.startRound(
+          user: activeUser,
+          shift: activeShift,
+          totalPoints: roundState.totalPoints,
+          localId: localRoundId,
+        );
+      }
+
+      await roundState.startRound(
+        roundContext: RoundOperationalContext(
+          userId: activeUser.id,
+          guardName: activeUser.displayName,
+          role: activeUser.role.label,
+          installation: activeUser.installationName,
+          shiftRecordId: activeShift.id,
+          shiftId: activeShift.shiftId,
+          shiftName: activeShift.shiftName,
+          shiftScheduledStart: activeShift.scheduledStart,
+          shiftScheduledEnd: activeShift.scheduledEnd,
+          shiftStartedAt: activeShift.actualStartedAt,
+          onlineRoundId: onlineRoundId,
+          onlineRoundLocalId: localRoundId,
+        ),
+      );
+      if (onlineRoundId.isNotEmpty) {
+        await roundState.updateOnlineRoundId(onlineRoundId);
+      }
+    } catch (error) {
+      if (!context.mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            error is SupabaseRoundStartException
+                ? error.message
+                : error is StateError
+                ? error.message.toString()
+                : 'No se pudo iniciar la ronda en Supabase.',
+          ),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
 
     if (!context.mounted) {
       return;
@@ -134,8 +255,10 @@ class HomeScreen extends StatelessWidget {
 
   Future<void> iniciarTurno(BuildContext context, AppUser user) async {
     try {
-      final WorkShiftRecord shift = await WorkShiftStore.instance.startShift(
-        user,
+      final WorkShiftRecord shift = await SupabaseShiftService.instance
+          .startShift(user);
+      await SupabaseDataCoordinator.instance.refreshCurrentUserData(
+        force: true,
       );
 
       if (!context.mounted) {
@@ -209,8 +332,10 @@ class HomeScreen extends StatelessWidget {
     }
 
     try {
-      final WorkShiftRecord closed = await WorkShiftStore.instance.closeShift(
-        user.id,
+      final WorkShiftRecord closed = await SupabaseShiftService.instance
+          .closeShift(user);
+      await SupabaseDataCoordinator.instance.refreshCurrentUserData(
+        force: true,
       );
       if (!context.mounted) {
         return;
@@ -505,7 +630,7 @@ class HomeScreen extends StatelessWidget {
             currentDate: formatearFecha(DateTime.now()),
             activeGuardCount: userAccountStore.activeGuards.length,
             shiftDefinitions: shiftStore.definitions,
-            activeShift: shiftStore.activeShift,
+            activeShifts: shiftStore.activeShifts,
             shiftHistory: shiftStore.history,
             rounds: historyStore.rounds,
             userAccountStore: userAccountStore,
@@ -1010,7 +1135,7 @@ class _AdminHomeScaffold extends StatelessWidget {
   final String currentDate;
   final int activeGuardCount;
   final List<ShiftDefinition> shiftDefinitions;
-  final WorkShiftRecord? activeShift;
+  final List<WorkShiftRecord> activeShifts;
   final List<WorkShiftRecord> shiftHistory;
   final List<RoundHistoryItem> rounds;
   final UserAccountStore userAccountStore;
@@ -1027,7 +1152,7 @@ class _AdminHomeScaffold extends StatelessWidget {
     required this.currentDate,
     required this.activeGuardCount,
     required this.shiftDefinitions,
-    required this.activeShift,
+    required this.activeShifts,
     required this.shiftHistory,
     required this.rounds,
     required this.userAccountStore,
@@ -1054,11 +1179,17 @@ class _AdminHomeScaffold extends StatelessWidget {
         ? null
         : userAccountStore.accountById(definition.assignedUserId)?.user;
 
-    final WorkShiftRecord? current = activeShift;
-    final bool isCurrentShift =
-        current != null &&
-        current.shiftId == definition.id &&
-        (assignedGuard == null || current.userId == assignedGuard.id);
+    final List<WorkShiftRecord> currentMatches = activeShifts.where((shift) {
+      return shift.shiftId == definition.id &&
+          (assignedGuard == null || shift.userId == assignedGuard.id);
+    }).toList();
+    currentMatches.sort(
+      (a, b) => b.actualStartedAt.compareTo(a.actualStartedAt),
+    );
+    final WorkShiftRecord? current = currentMatches.isEmpty
+        ? null
+        : currentMatches.first;
+    final bool isCurrentShift = current != null;
 
     if (isCurrentShift) {
       return _AdminShiftStatus(
@@ -1142,8 +1273,8 @@ class _AdminHomeScaffold extends StatelessWidget {
     final RoundHistoryItem? latestRound = rounds.isEmpty ? null : rounds.first;
     final _AdminNoveltySummary? latestNovelty = _latestNovelty(rounds);
 
-    // Modo local/offline-first: este panel muestra solo datos guardados en este
-    // dispositivo. La sincronización multi-dispositivo llegará con Supabase.
+    final bool onlineMode = SupabaseService.instance.onlineMode;
+
     return Scaffold(
       backgroundColor: HomeScreen.fondo,
       body: SafeArea(
@@ -1223,9 +1354,11 @@ class _AdminHomeScaffold extends StatelessWidget {
                           Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              const Text(
-                                'Control operativo local',
-                                style: TextStyle(
+                              Text(
+                                onlineMode
+                                    ? 'Control operativo en línea'
+                                    : 'Control operativo local',
+                                style: const TextStyle(
                                   color: Colors.white,
                                   fontSize: 20,
                                   fontWeight: FontWeight.bold,
@@ -1365,18 +1498,22 @@ class _AdminHomeScaffold extends StatelessWidget {
                       color: const Color(0xFFEAF2FF),
                       borderRadius: BorderRadius.circular(15),
                     ),
-                    child: const Row(
+                    child: Row(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Icon(
-                          Icons.cloud_off_rounded,
+                          onlineMode
+                              ? Icons.cloud_done_rounded
+                              : Icons.cloud_off_rounded,
                           color: HomeScreen.azulPrincipal,
                         ),
-                        SizedBox(width: 11),
+                        const SizedBox(width: 11),
                         Expanded(
                           child: Text(
-                            'Modo local: el administrador ve solo los turnos y rondas guardados en este dispositivo. Con Supabase se podrá sincronizar información entre celulares.',
-                            style: TextStyle(
+                            onlineMode
+                                ? 'Modo en línea: los turnos, rondas y novedades se leen desde Supabase para ver información de otros teléfonos.'
+                                : 'Modo local: el administrador ve solo los turnos y rondas guardados en este dispositivo.',
+                            style: const TextStyle(
                               color: HomeScreen.azulOscuro,
                               fontSize: 13,
                               height: 1.4,

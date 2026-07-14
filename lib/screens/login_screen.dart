@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../app_routes.dart';
 import '../auth_models.dart';
 import '../auth_repository.dart';
+import '../services/supabase_data_coordinator.dart';
 import '../services/supabase_service.dart';
 import '../session_store.dart';
 import '../user_accounts.dart';
@@ -62,6 +63,9 @@ class _LoginScreenState extends State<LoginScreen> {
         email: correo,
         password: password,
         persistent: recordarme,
+      );
+      await SupabaseDataCoordinator.instance.refreshCurrentUserData(
+        force: true,
       );
       final String? notice = SessionStore.instance.consumeNotice();
 
@@ -197,7 +201,7 @@ class _LoginScreenState extends State<LoginScreen> {
     final String modeText = supabaseReady
         ? 'Acceso en línea con Supabase'
         : supabaseService.isConfigured
-        ? 'Supabase no disponible · respaldo local'
+        ? 'Supabase configurado · requiere internet'
         : 'Modo local activo';
     final IconData modeIcon = supabaseReady
         ? Icons.cloud_done_rounded
@@ -485,50 +489,52 @@ class _LoginScreenState extends State<LoginScreen> {
                   ),
                 ),
 
-                const SizedBox(height: 28),
+                if (!supabaseService.isConfigured) ...[
+                  const SizedBox(height: 28),
 
-                Row(
-                  children: [
-                    Expanded(
-                      child: Divider(
-                        color: Colors.white.withValues(alpha: 0.3),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Divider(
+                          color: Colors.white.withValues(alpha: 0.3),
+                        ),
                       ),
-                    ),
-                    Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 12),
-                      child: Text(
-                        'o continúa con',
-                        style: TextStyle(
-                          color: Colors.white.withValues(alpha: 0.7),
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 12),
+                        child: Text(
+                          'o continúa con',
+                          style: TextStyle(
+                            color: Colors.white.withValues(alpha: 0.7),
+                          ),
+                        ),
+                      ),
+                      Expanded(
+                        child: Divider(
+                          color: Colors.white.withValues(alpha: 0.3),
+                        ),
+                      ),
+                    ],
+                  ),
+
+                  const SizedBox(height: 20),
+
+                  SizedBox(
+                    width: double.infinity,
+                    height: 54,
+                    child: OutlinedButton.icon(
+                      onPressed: ingresando ? null : mostrarCuentasDemo,
+                      icon: const Icon(Icons.badge_outlined),
+                      label: const Text('Ver cuentas de demostración'),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: Colors.white,
+                        side: const BorderSide(color: azulPrincipal),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(14),
                         ),
                       ),
                     ),
-                    Expanded(
-                      child: Divider(
-                        color: Colors.white.withValues(alpha: 0.3),
-                      ),
-                    ),
-                  ],
-                ),
-
-                const SizedBox(height: 20),
-
-                SizedBox(
-                  width: double.infinity,
-                  height: 54,
-                  child: OutlinedButton.icon(
-                    onPressed: ingresando ? null : mostrarCuentasDemo,
-                    icon: const Icon(Icons.badge_outlined),
-                    label: const Text('Ver cuentas de demostración'),
-                    style: OutlinedButton.styleFrom(
-                      foregroundColor: Colors.white,
-                      side: const BorderSide(color: azulPrincipal),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(14),
-                      ),
-                    ),
                   ),
-                ),
+                ],
 
                 const SizedBox(height: 45),
 
