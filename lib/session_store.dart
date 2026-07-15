@@ -36,9 +36,19 @@ class SessionStore extends ChangeNotifier {
     return notice;
   }
 
-  Future<void> loadSession(AppSession? savedSession) async {
+  Future<void> loadSession(
+    AppSession? savedSession, {
+    bool refreshUser = true,
+  }) async {
     if (savedSession == null || !savedSession.persistent) {
       _session = null;
+      _initialized = true;
+      notifyListeners();
+      return;
+    }
+
+    if (!refreshUser) {
+      _session = savedSession.user.isActive ? savedSession : null;
       _initialized = true;
       notifyListeners();
       return;

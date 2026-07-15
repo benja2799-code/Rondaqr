@@ -112,9 +112,9 @@ class ControlPointsScreen extends StatelessWidget {
           behavior: SnackBarBehavior.floating,
         ),
       );
-    } catch (_) {
+    } catch (error) {
       if (context.mounted) {
-        _showSaveError(context);
+        _showSaveError(context, error);
       }
     }
   }
@@ -180,18 +180,20 @@ class ControlPointsScreen extends StatelessWidget {
           behavior: SnackBarBehavior.floating,
         ),
       );
-    } catch (_) {
+    } catch (error) {
       if (context.mounted) {
-        _showSaveError(context);
+        _showSaveError(context, error);
       }
     }
   }
 
-  void _showSaveError(BuildContext context) {
+  void _showSaveError(BuildContext context, Object error) {
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
+      SnackBar(
         content: Text(
-          'No fue posible guardar los puntos de control. Intenta nuevamente.',
+          error is StateError
+              ? error.message
+              : 'No fue posible guardar los puntos de control. Intenta nuevamente.',
         ),
         behavior: SnackBarBehavior.floating,
       ),

@@ -11,15 +11,19 @@ import 'local_storage.dart';
 import 'round_history.dart';
 import 'round_state.dart';
 import 'screens/home_screen.dart';
+import 'screens/about_screen.dart';
 import 'screens/control_points_screen.dart';
 import 'screens/edit_profile_screen.dart';
+import 'screens/help_screen.dart';
 import 'screens/history_screen.dart';
 import 'screens/login_screen.dart';
 import 'screens/notifications_screen.dart';
 import 'screens/profile_screen.dart';
 import 'screens/reports_screen.dart';
 import 'screens/users_screen.dart';
+import 'services/pin_auth_service.dart';
 import 'services/supabase_auth_service.dart';
+import 'services/supabase_config_service.dart';
 import 'services/supabase_data_coordinator.dart';
 import 'services/supabase_service.dart';
 import 'session_store.dart';
@@ -30,6 +34,10 @@ import 'work_shifts.dart';
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
+  runApp(const RondaQRApp());
+}
+
+Future<void> initializeRondaQRApplication() async {
   final LocalStorage localStorage = LocalStorage.instance;
   final RoundHistoryStore historyStore = RoundHistoryStore.instance;
   final RoundState roundState = RoundState.instance;
@@ -40,6 +48,17 @@ Future<void> main() async {
   final UserAccountStore userAccountStore = UserAccountStore.instance;
   final WorkShiftStore workShiftStore = WorkShiftStore.instance;
   final SupabaseService supabaseService = SupabaseService.instance;
+  final PinAuthService pinAuthService = PinAuthService.instance;
+
+  final savedRoundsFuture = localStorage.loadHistory();
+  final savedActiveRoundFuture = localStorage.loadActiveRound();
+  final savedConfigurationFuture = localStorage.loadUserConfiguration();
+  final savedUsersFuture = localStorage.loadUsers();
+  final savedShiftsFuture = localStorage.loadShiftDefinitions();
+  final savedActiveShiftFuture = localStorage.loadActiveShift();
+  final savedShiftHistoryFuture = localStorage.loadShiftHistory();
+  final savedControlPointsFuture = localStorage.loadControlPoints();
+  final savedSessionFuture = localStorage.loadSession();
 
   await supabaseService.initialize();
 
@@ -48,10 +67,29 @@ Future<void> main() async {
   workShiftStore.onDefinitionsChanged = localStorage.saveShiftDefinitions;
   workShiftStore.onActiveShiftChanged = localStorage.saveActiveShift;
   workShiftStore.onHistoryChanged = localStorage.saveShiftHistory;
-  controlPointStore.onPointsChanged = localStorage.saveControlPoints;
+  controlPointStore.onPointsChanged = (points) async {
+    if (!supabaseService.onlineMode) {
+      await localStorage.saveControlPoints(points);
+      return points;
+    }
+
+    final AppUser? currentUser = sessionStore.currentUser;
+    if (currentUser == null) {
+      throw StateError('Debes iniciar sesión para guardar los puntos.');
+    }
+
+    final List<ControlPointDefinition> remotePoints =
+        await SupabaseConfigService.instance.replaceControlPointsForUser(
+          user: currentUser,
+          points: points,
+        );
+    await localStorage.saveControlPoints(remotePoints);
+    return remotePoints;
+  };
   sessionStore.onSessionCreated = localStorage.saveSession;
   sessionStore.onSessionCleared = () async {
     await localStorage.clearSession();
+    pinAuthService.clearUnlock();
 
     if (supabaseService.onlineMode) {
       await roundState.resetRound();
@@ -80,21 +118,16 @@ Future<void> main() async {
     return localStorage.saveActiveRound(activeRound);
   };
 
-  final List<RoundHistoryItem> savedRounds = await localStorage.loadHistory();
-  final ActiveRoundSnapshot? savedActiveRound = await localStorage
-      .loadActiveRound();
-  final UserConfiguration? savedConfiguration = await localStorage
-      .loadUserConfiguration();
-  final List<LocalUserAccount>? savedUsers = await localStorage.loadUsers();
-  final List<ShiftDefinition>? savedShifts = await localStorage
-      .loadShiftDefinitions();
-  final WorkShiftRecord? savedActiveShift = await localStorage
-      .loadActiveShift();
-  final List<WorkShiftRecord> savedShiftHistory = await localStorage
-      .loadShiftHistory();
-  final List<ControlPointDefinition>? savedControlPoints = await localStorage
-      .loadControlPoints();
-  final AppSession? savedSession = await localStorage.loadSession();
+  final List<RoundHistoryItem> savedRounds = await savedRoundsFuture;
+  final ActiveRoundSnapshot? savedActiveRound = await savedActiveRoundFuture;
+  final UserConfiguration? savedConfiguration = await savedConfigurationFuture;
+  final List<LocalUserAccount>? savedUsers = await savedUsersFuture;
+  final List<ShiftDefinition>? savedShifts = await savedShiftsFuture;
+  final WorkShiftRecord? savedActiveShift = await savedActiveShiftFuture;
+  final List<WorkShiftRecord> savedShiftHistory = await savedShiftHistoryFuture;
+  final List<ControlPointDefinition>? savedControlPoints =
+      await savedControlPointsFuture;
+  final AppSession? savedSession = await savedSessionFuture;
 
   historyStore.loadRounds(savedRounds);
   configurationStore.loadConfiguration(savedConfiguration);
@@ -132,7 +165,11 @@ Future<void> main() async {
   );
   roundState.configureControlPoints(controlPointStore.activePoints);
   roundState.loadActiveRound(savedActiveRound);
-  await sessionStore.loadSession(savedSession);
+  await sessionStore.loadSession(
+    savedSession,
+    refreshUser: !supabaseService.onlineMode,
+  );
+  await pinAuthService.prepareForUser(sessionStore.currentUser?.id);
 
   controlPointStore.addListener(() {
     roundState.configureControlPoints(controlPointStore.activePoints);
@@ -179,13 +216,45 @@ Future<void> main() async {
     }
   });
 
-  await SupabaseDataCoordinator.instance.refreshCurrentUserData(force: true);
-
-  runApp(const RondaQRApp());
+  if (supabaseService.onlineMode && sessionStore.isAuthenticated) {
+    unawaited(_refreshOnlineDataAfterStartup(sessionStore));
+  }
 }
 
-class RondaQRApp extends StatelessWidget {
-  const RondaQRApp({super.key});
+Future<void> _refreshOnlineDataAfterStartup(SessionStore sessionStore) async {
+  try {
+    await sessionStore.refreshCurrentUser();
+    await SupabaseDataCoordinator.instance.refreshCurrentUserData(force: true);
+  } catch (error) {
+    debugPrint(
+      'Actualización online posterior al inicio no disponible: $error',
+    );
+  }
+}
+
+class RondaQRApp extends StatefulWidget {
+  final Future<void>? initialization;
+
+  const RondaQRApp({super.key, this.initialization});
+
+  @override
+  State<RondaQRApp> createState() => _RondaQRAppState();
+}
+
+class _RondaQRAppState extends State<RondaQRApp> {
+  late Future<void> _initialization;
+
+  @override
+  void initState() {
+    super.initState();
+    _initialization = widget.initialization ?? initializeRondaQRApplication();
+  }
+
+  void _retryInitialization() {
+    setState(() {
+      _initialization = initializeRondaQRApplication();
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -193,11 +262,12 @@ class RondaQRApp extends StatelessWidget {
       title: 'RondaQR',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(primarySwatch: Colors.blue),
-      initialRoute: SessionStore.instance.isAuthenticated
-          ? AppRoutes.home
-          : AppRoutes.login,
+      home: _AppStartupGate(
+        initialization: _initialization,
+        onRetry: _retryInitialization,
+      ),
       routes: {
-        AppRoutes.login: (_) => const LoginScreen(),
+        AppRoutes.pinUnlock: (_) => const SessionGuard(child: HomeScreen()),
         AppRoutes.home: (_) => const SessionGuard(child: HomeScreen()),
         AppRoutes.history: (_) => const PermissionGuard(
           permission: AppPermission.viewHistory,
@@ -210,6 +280,14 @@ class RondaQRApp extends StatelessWidget {
         AppRoutes.profile: (_) => const PermissionGuard(
           permission: AppPermission.viewProfile,
           child: ProfileScreen(),
+        ),
+        AppRoutes.help: (_) => const PermissionGuard(
+          permission: AppPermission.viewProfile,
+          child: HelpScreen(),
+        ),
+        AppRoutes.about: (_) => const PermissionGuard(
+          permission: AppPermission.viewProfile,
+          child: AboutRondaQrScreen(),
         ),
         AppRoutes.notifications: (_) => const PermissionGuard(
           permission: AppPermission.viewNovelties,
@@ -228,6 +306,112 @@ class RondaQRApp extends StatelessWidget {
           child: UsersScreen(),
         ),
       },
+    );
+  }
+}
+
+class _AppStartupGate extends StatelessWidget {
+  final Future<void> initialization;
+  final VoidCallback onRetry;
+
+  const _AppStartupGate({required this.initialization, required this.onRetry});
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<void>(
+      future: initialization,
+      builder: (context, snapshot) {
+        if (snapshot.connectionState != ConnectionState.done) {
+          return const _AppLoadingScreen();
+        }
+
+        if (snapshot.hasError) {
+          debugPrint('No fue posible iniciar RondaQR: ${snapshot.error}');
+          return _AppStartupErrorScreen(onRetry: onRetry);
+        }
+
+        final SessionStore sessionStore = SessionStore.instance;
+        final AppUser? user = sessionStore.currentUser;
+
+        if (!sessionStore.isAuthenticated || user == null) {
+          return const LoginScreen();
+        }
+
+        return const SessionGuard(child: HomeScreen());
+      },
+    );
+  }
+}
+
+class _AppLoadingScreen extends StatelessWidget {
+  const _AppLoadingScreen();
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xFFF8FAFD),
+      body: const Center(
+        child: SizedBox(
+          width: 22,
+          height: 22,
+          child: CircularProgressIndicator(
+            strokeWidth: 2.4,
+            color: Color(0xFF0866FF),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _AppStartupErrorScreen extends StatelessWidget {
+  final VoidCallback onRetry;
+
+  const _AppStartupErrorScreen({required this.onRetry});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xFFF8FAFD),
+      body: SafeArea(
+        child: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(28),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(
+                  Icons.error_outline_rounded,
+                  size: 54,
+                  color: Color(0xFF0866FF),
+                ),
+                const SizedBox(height: 16),
+                const Text(
+                  'No fue posible iniciar la aplicación.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: Color(0xFF061B44),
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                const Text(
+                  'Reintenta para volver a cargar tus datos.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: Color(0xFF667085)),
+                ),
+                const SizedBox(height: 20),
+                FilledButton.icon(
+                  onPressed: onRetry,
+                  icon: const Icon(Icons.refresh_rounded),
+                  label: const Text('Reintentar'),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
     );
   }
 }

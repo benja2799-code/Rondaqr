@@ -274,7 +274,7 @@ class _RoundSummaryScreenState extends State<RoundSummaryScreen> {
       await SupabaseRoundService.instance.loadHistory(user);
       debugPrint('RondaQR finalizar ronda | historial Supabase refrescado: ok');
     } catch (error, stackTrace) {
-      debugPrint('Historial local opcional fallÃ³: $error');
+      debugPrint('Historial local opcional falló: $error');
       debugPrintStack(stackTrace: stackTrace);
     }
   }
@@ -288,7 +288,7 @@ class _RoundSummaryScreenState extends State<RoundSummaryScreen> {
       debugPrint('RondaQR finalizar ronda | $description: ok');
     } catch (error, stackTrace) {
       debugPrint(
-        'RondaQR finalizar ronda | $description fallÃ³ (no crÃ­tico): $error',
+        'RondaQR finalizar ronda | $description falló (no crítico): $error',
       );
       debugPrintStack(stackTrace: stackTrace);
     }

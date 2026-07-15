@@ -810,17 +810,17 @@ class SupabaseRoundService {
     );
     if (verificationRows.isEmpty) {
       throw const SupabaseRoundFinishException(
-        'No se encontrÃ³ la ronda en Supabase.',
+        'No se encontró la ronda en Supabase.',
       );
     }
 
     final Map<String, dynamic> finalRow = verificationRows.first;
     debugPrint(
-      'RondaQR finalizar ronda | status final leÃ­do desde Supabase: '
+      'RondaQR finalizar ronda | status final leído desde Supabase: '
       '${_readText(finalRow, 'status')}',
     );
     debugPrint(
-      'RondaQR finalizar ronda | finished_at final leÃ­do desde Supabase: '
+      'RondaQR finalizar ronda | finished_at final leído desde Supabase: '
       '${_readText(finalRow, 'finished_at')}',
     );
     debugPrint('RondaQR finalizar ronda | flujo Supabase finalizado: ok');

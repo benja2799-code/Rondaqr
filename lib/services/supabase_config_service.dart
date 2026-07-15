@@ -1,4 +1,5 @@
 import 'package:flutter/foundation.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../auth_models.dart';
 import '../control_points.dart';
@@ -32,8 +33,15 @@ class SupabaseConfigService {
     }
 
     try {
+      final String installationId = user.installationId.trim();
+      if (installationId.isEmpty) {
+        throw StateError(
+          'El usuario no tiene una instalación asignada en Supabase.',
+        );
+      }
+
       final List<Map<String, dynamic>> profiles = await _loadProfiles(
-        installationId: user.installationId,
+        installationId: installationId,
       );
       final Map<String, Map<String, dynamic>> installations =
           await _loadInstallationsForProfiles(profiles, user);
@@ -65,21 +73,152 @@ class SupabaseConfigService {
       }
 
       final List<ControlPointDefinition> points = await _loadControlPoints(
-        installationId: user.installationId,
+        installationId: installationId,
       );
-      if (points.isNotEmpty) {
-        ControlPointStore.instance.loadPoints(points);
-        RoundState.instance.configureControlPoints(
-          ControlPointStore.instance.activePoints,
-        );
-      }
+      ControlPointStore.instance.loadPoints(points);
+      RoundState.instance.configureControlPoints(
+        ControlPointStore.instance.activePoints,
+      );
+      debugPrint(
+        'RondaQR puntos cargados | user_id: ${user.id} | '
+        'installation_id: $installationId | total: ${points.length} | '
+        'activos: ${points.where((point) => point.isActive).length}',
+      );
     } catch (error, stackTrace) {
       debugPrint('No fue posible cargar configuración Supabase: $error');
       debugPrintStack(stackTrace: stackTrace);
       if (SupabaseService.instance.isLikelyNetworkError(error)) {
         SupabaseService.instance.throwOnlineRequired();
       }
+      if (error is StateError) {
+        rethrow;
+      }
       throw StateError('No se pudo cargar la configuración desde Supabase.');
+    }
+  }
+
+  Future<List<ControlPointDefinition>> replaceControlPointsForUser({
+    required AppUser user,
+    required List<ControlPointDefinition> points,
+  }) async {
+    if (!SupabaseService.instance.onlineMode) {
+      return points;
+    }
+
+    if (!user.can(AppPermission.manageControlPoints)) {
+      throw StateError('Tu usuario no tiene permiso para modificar puntos.');
+    }
+
+    final String installationId = user.installationId.trim();
+    if (installationId.isEmpty) {
+      throw StateError(
+        'El administrador no tiene una instalación asignada en Supabase.',
+      );
+    }
+
+    final Set<String> qrIdentifiers = {};
+    for (final ControlPointDefinition point in points) {
+      final String qrIdentifier = ControlPointDefinition.normalizeQrIdentifier(
+        point.qrIdentifier,
+      );
+      if (qrIdentifier.isEmpty || !qrIdentifiers.add(qrIdentifier)) {
+        throw StateError('Los identificadores QR deben ser únicos.');
+      }
+    }
+
+    final SupabaseClient client = SupabaseService.instance.requireClient();
+
+    try {
+      final List<Map<String, dynamic>> existingRows = _rows(
+        await client
+            .from('control_points')
+            .select(_controlPointColumns)
+            .eq('installation_id', installationId),
+      );
+      final Map<String, Map<String, dynamic>> existingById = {
+        for (final Map<String, dynamic> row in existingRows)
+          readSupabaseText(row, 'id'): row,
+      };
+      final Map<String, Map<String, dynamic>> existingByQr = {
+        for (final Map<String, dynamic> row in existingRows)
+          ControlPointDefinition.normalizeQrIdentifier(
+            readSupabaseText(row, 'qr_code'),
+          ): row,
+      };
+      final Set<String> retainedRemoteIds = {};
+
+      for (final ControlPointDefinition point in points) {
+        final String qrIdentifier =
+            ControlPointDefinition.normalizeQrIdentifier(point.qrIdentifier);
+        final Map<String, dynamic>? existing =
+            existingById[point.id] ?? existingByQr[qrIdentifier];
+        final Map<String, dynamic> values = {
+          'installation_id': installationId,
+          'name': point.name.trim(),
+          'description': point.description.trim(),
+          'qr_code': qrIdentifier,
+          'display_order': point.order,
+          'is_active': point.isActive,
+          'updated_at': DateTime.now().toUtc().toIso8601String(),
+        };
+
+        if (existing == null) {
+          final dynamic inserted = await client
+              .from('control_points')
+              .insert(values)
+              .select(_controlPointColumns)
+              .single();
+          retainedRemoteIds.add(
+            readSupabaseText(Map<String, dynamic>.from(inserted as Map), 'id'),
+          );
+          continue;
+        }
+
+        final String remoteId = readSupabaseText(existing, 'id');
+        if (remoteId.isEmpty) {
+          throw StateError('Supabase devolvió un punto sin identificador.');
+        }
+
+        await client
+            .from('control_points')
+            .update(values)
+            .eq('id', remoteId)
+            .eq('installation_id', installationId);
+        retainedRemoteIds.add(remoteId);
+      }
+
+      for (final Map<String, dynamic> existing in existingRows) {
+        final String remoteId = readSupabaseText(existing, 'id');
+        if (remoteId.isEmpty || retainedRemoteIds.contains(remoteId)) {
+          continue;
+        }
+
+        await client
+            .from('control_points')
+            .delete()
+            .eq('id', remoteId)
+            .eq('installation_id', installationId);
+      }
+
+      final List<ControlPointDefinition> saved = await _loadControlPoints(
+        installationId: installationId,
+      );
+      if (!_sameControlPointConfiguration(points, saved)) {
+        throw StateError(
+          'Supabase no confirmó los cambios de puntos. Revisa los permisos '
+          'RLS del Administrador.',
+        );
+      }
+      debugPrint(
+        'RondaQR puntos Supabase | installation_id: $installationId | '
+        'guardados: ${saved.length} | activos: '
+        '${saved.where((point) => point.isActive).length}',
+      );
+      return saved;
+    } catch (error, stackTrace) {
+      debugPrint('No fue posible guardar puntos en Supabase: $error');
+      debugPrintStack(stackTrace: stackTrace);
+      _throwControlPointSaveError(error);
     }
   }
 
@@ -213,7 +352,7 @@ class SupabaseConfigService {
     required String installationId,
   }) async {
     final client = SupabaseService.instance.requireClient();
-    dynamic query = client.from('control_points').select('*');
+    dynamic query = client.from('control_points').select(_controlPointColumns);
 
     if (installationId.isNotEmpty) {
       query = query.eq('installation_id', installationId);
@@ -243,7 +382,7 @@ class SupabaseConfigService {
           name: name,
           qrIdentifier: qrIdentifier,
           description: _firstText(row, ['description', 'location', 'address']),
-          order: _readInt(row, 'order', fallback: index + 1),
+          order: _readInt(row, 'display_order', fallback: index + 1),
           isActive: _readBool(row, 'is_active', fallback: true),
           iconKey: _iconKey(row),
         ),
@@ -253,6 +392,79 @@ class SupabaseConfigService {
     points.sort((a, b) => a.order.compareTo(b.order));
     return points;
   }
+
+  Never _throwControlPointSaveError(Object error) {
+    if (SupabaseService.instance.isLikelyNetworkError(error)) {
+      throw StateError(
+        'Sin conexión. No fue posible guardar los puntos en Supabase.',
+      );
+    }
+
+    final String text = error.toString().toLowerCase();
+    if ((error is PostgrestException && error.code == '23505') ||
+        text.contains('duplicate') ||
+        text.contains('unique')) {
+      throw StateError('El identificador QR ya está en uso.');
+    }
+
+    if ((error is PostgrestException && error.code == '23503') ||
+        text.contains('foreign key')) {
+      throw StateError(
+        'Este punto tiene registros históricos y no puede eliminarse. '
+        'Puedes dejarlo inactivo.',
+      );
+    }
+
+    if ((error is PostgrestException && error.code == '42501') ||
+        text.contains('row-level security') ||
+        text.contains('permission denied') ||
+        text.contains('rls')) {
+      throw StateError(
+        'Supabase no permite modificar puntos con este usuario. Revisa los '
+        'permisos RLS del Administrador.',
+      );
+    }
+
+    if (error is StateError) {
+      throw error;
+    }
+
+    throw StateError('No fue posible guardar los puntos en Supabase.');
+  }
+
+  bool _sameControlPointConfiguration(
+    List<ControlPointDefinition> expected,
+    List<ControlPointDefinition> saved,
+  ) {
+    if (expected.length != saved.length) {
+      return false;
+    }
+
+    final Map<String, ControlPointDefinition> savedByQr = {
+      for (final ControlPointDefinition point in saved)
+        ControlPointDefinition.normalizeQrIdentifier(point.qrIdentifier): point,
+    };
+
+    for (final ControlPointDefinition point in expected) {
+      final String qrIdentifier = ControlPointDefinition.normalizeQrIdentifier(
+        point.qrIdentifier,
+      );
+      final ControlPointDefinition? remote = savedByQr[qrIdentifier];
+      if (remote == null ||
+          remote.name.trim() != point.name.trim() ||
+          remote.description.trim() != point.description.trim() ||
+          remote.order != point.order ||
+          remote.isActive != point.isActive) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  static const String _controlPointColumns =
+      'id,installation_id,name,description,qr_code,display_order,is_active,'
+      'created_at,updated_at';
 
   String _assignedUserForShift({
     required List<Map<String, dynamic>> profiles,

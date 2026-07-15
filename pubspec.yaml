@@ -16,7 +16,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 1.1.4+9
+version: 1.2.1+8301
 
 environment:
   sdk: ^3.12.1
@@ -34,8 +34,11 @@ dependencies:
   # The following adds the Cupertino Icons font to your application.
   # Use with the CupertinoIcons class for iOS style icons.
   cupertino_icons: ^1.0.8
+  crypto: ^3.0.6
+  flutter_secure_storage: ^10.3.1
   image_picker: ^1.2.2
   mobile_scanner: ^7.2.0
+  package_info_plus: ^10.2.0
   pdf: ^3.11.3
   path_provider: ^2.1.6
   qr_code_scanner_plus: ^2.2.0
@@ -78,6 +81,9 @@ flutter:
   # the material Icons class.
   uses-material-design: true
 
+  assets:
+    - assets/images/rondaqr_icon_minimal.png
+
   # To add assets to your application, add an assets section, like this:
   # assets:
   #   - images/a_dot_burr.jpeg
@@ -116,12 +122,11 @@ flutter_launcher_icons:
   min_sdk_android: 21
 
 flutter_native_splash:
-  color: "#061B44"
+  color: "#F8FAFD"
   android: true
   ios: false
   web: false
   fullscreen: true
   android_12:
-    color: "#061B44"
-    image: assets/images/rondaqr_icon_minimal.png
-    icon_background_color: "#061B44"
+    color: "#F8FAFD"
+    icon_background_color: "#F8FAFD"

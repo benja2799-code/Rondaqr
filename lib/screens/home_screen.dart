@@ -6,6 +6,7 @@ import '../auth_models.dart';
 import '../round_history.dart';
 import '../round_state.dart';
 import '../services/sync_status.dart';
+import '../services/supabase_config_service.dart';
 import '../services/supabase_data_coordinator.dart';
 import '../services/supabase_round_service.dart';
 import '../services/supabase_service.dart';
@@ -84,6 +85,31 @@ class HomeScreen extends StatelessWidget {
       return;
     }
     final AppUser activeUser = user;
+
+    if (SupabaseService.instance.onlineMode && !roundState.roundStarted) {
+      try {
+        await SupabaseConfigService.instance.loadForUser(activeUser);
+        debugPrint(
+          'RondaQR iniciar ronda | puntos actualizados desde Supabase: '
+          '${roundState.totalPoints}',
+        );
+      } catch (error) {
+        if (!context.mounted) {
+          return;
+        }
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              error is StateError
+                  ? error.message.toString()
+                  : 'No fue posible actualizar los puntos de control.',
+            ),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+        return;
+      }
+    }
 
     if (SupabaseService.instance.onlineMode &&
         (activeShift == null ||

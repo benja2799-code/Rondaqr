@@ -1,11 +1,9 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
 
 import 'app_routes.dart';
 import 'auth_models.dart';
-import 'services/supabase_data_coordinator.dart';
-import 'services/supabase_service.dart';
+import 'screens/pin_unlock_screen.dart';
+import 'services/pin_auth_service.dart';
 import 'session_store.dart';
 
 class SessionGuard extends StatelessWidget {
@@ -18,14 +16,15 @@ class SessionGuard extends StatelessWidget {
     final SessionStore sessionStore = SessionStore.instance;
 
     return AnimatedBuilder(
-      animation: sessionStore,
+      animation: Listenable.merge([sessionStore, PinAuthService.instance]),
       builder: (context, _) {
         if (!sessionStore.isAuthenticated) {
           return const AccessDeniedScreen(sessionRequired: true);
         }
 
-        if (SupabaseService.instance.onlineMode) {
-          unawaited(SupabaseDataCoordinator.instance.refreshCurrentUserData());
+        final AppUser? user = sessionStore.currentUser;
+        if (PinAuthService.instance.shouldRequirePinFor(user?.id)) {
+          return const PinUnlockScreen();
         }
 
         return child;
@@ -49,10 +48,15 @@ class PermissionGuard extends StatelessWidget {
     final SessionStore sessionStore = SessionStore.instance;
 
     return AnimatedBuilder(
-      animation: sessionStore,
+      animation: Listenable.merge([sessionStore, PinAuthService.instance]),
       builder: (context, _) {
         if (!sessionStore.isAuthenticated) {
           return const AccessDeniedScreen(sessionRequired: true);
+        }
+
+        final AppUser? user = sessionStore.currentUser;
+        if (PinAuthService.instance.shouldRequirePinFor(user?.id)) {
+          return const PinUnlockScreen();
         }
 
         if (!sessionStore.can(permission)) {

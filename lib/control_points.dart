@@ -135,7 +135,10 @@ class ControlPointStore extends ChangeNotifier {
   final List<ControlPointDefinition> _points = [];
   bool _initialized = false;
 
-  Future<void> Function(List<ControlPointDefinition> points)? onPointsChanged;
+  Future<List<ControlPointDefinition>> Function(
+    List<ControlPointDefinition> points,
+  )?
+  onPointsChanged;
 
   bool get initialized {
     return _initialized;
@@ -224,11 +227,11 @@ class ControlPointStore extends ChangeNotifier {
     }
 
     final List<ControlPointDefinition> ordered = _ordered(updated);
-    await saveFunction(ordered);
+    final List<ControlPointDefinition> saved = await saveFunction(ordered);
 
     _points
       ..clear()
-      ..addAll(ordered);
+      ..addAll(_ordered(saved));
 
     notifyListeners();
   }

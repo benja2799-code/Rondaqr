@@ -1,7 +1,10 @@
 import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../app_routes.dart';
+import '../app_info.dart';
 import '../auth_models.dart';
+import '../services/supabase_service.dart';
 import '../session_store.dart';
 import '../user_configuration.dart';
 import '../work_shifts.dart';
@@ -109,6 +112,42 @@ class ProfileScreen extends StatelessWidget {
 
   void abrirUsuarios(BuildContext context) {
     Navigator.pushNamed(context, AppRoutes.users);
+  }
+
+  Future<void> cambiarContrasena(BuildContext context) async {
+    if (!SupabaseService.instance.onlineMode) {
+      mostrarMensaje(
+        context,
+        'El cambio de contraseña está disponible en modo Supabase.',
+      );
+      return;
+    }
+
+    final AppUser? user = SessionStore.instance.currentUser;
+    if (user == null || user.email.isEmpty) {
+      mostrarMensaje(context, 'No existe una sesión activa.');
+      return;
+    }
+
+    final bool? changed = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) {
+        return _ChangePasswordDialog(user: user);
+      },
+    );
+
+    if (changed != true || !context.mounted) {
+      return;
+    }
+
+    Navigator.pushNamedAndRemoveUntil(context, AppRoutes.login, (_) => false);
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Contraseña actualizada. Inicia sesión nuevamente.'),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
   }
 
   @override
@@ -386,10 +425,7 @@ class ProfileScreen extends StatelessWidget {
                           title: 'Cambiar contraseña',
                           subtitle: 'Actualiza tu contraseña de acceso',
                           onTap: () {
-                            mostrarMensaje(
-                              context,
-                              'La opción para cambiar contraseña se agregará más adelante.',
-                            );
+                            cambiarContrasena(context);
                           },
                         ),
                         const SizedBox(height: 12),
@@ -398,29 +434,21 @@ class ProfileScreen extends StatelessWidget {
                           title: 'Ayuda',
                           subtitle: 'Consulta información sobre la aplicación',
                           onTap: () {
-                            mostrarMensaje(
-                              context,
-                              'La sección de ayuda se agregará más adelante.',
-                            );
+                            Navigator.pushNamed(context, AppRoutes.help);
                           },
                         ),
                         const SizedBox(height: 12),
-                        _ProfileOption(
-                          icon: Icons.info_outline_rounded,
-                          title: 'Acerca de RondaQR',
-                          subtitle: 'Versión 1.1.1',
-                          onTap: () {
-                            showAboutDialog(
-                              context: context,
-                              applicationName: 'RondaQR',
-                              applicationVersion: '1.1.1',
-                              applicationLegalese: company,
-                              children: const [
-                                SizedBox(height: 12),
-                                Text(
-                                  'Aplicación para el control de rondas de seguridad.',
-                                ),
-                              ],
+                        FutureBuilder<String>(
+                          future: RondaQrAppInfo.version,
+                          builder: (context, snapshot) {
+                            return _ProfileOption(
+                              icon: Icons.info_outline_rounded,
+                              title: 'Acerca de RondaQR',
+                              subtitle:
+                                  'Versión ${snapshot.data ?? 'Cargando…'}',
+                              onTap: () {
+                                Navigator.pushNamed(context, AppRoutes.about);
+                              },
                             );
                           },
                         ),
@@ -465,6 +493,281 @@ class ProfileScreen extends StatelessWidget {
           ),
         );
       },
+    );
+  }
+}
+
+class _ChangePasswordDialog extends StatefulWidget {
+  final AppUser user;
+
+  const _ChangePasswordDialog({required this.user});
+
+  @override
+  State<_ChangePasswordDialog> createState() => _ChangePasswordDialogState();
+}
+
+class _ChangePasswordDialogState extends State<_ChangePasswordDialog> {
+  static const Color azulPrincipal = Color(0xFF0866FF);
+  static const Color rojo = Color(0xFFD92D20);
+
+  final TextEditingController _currentController = TextEditingController();
+  final TextEditingController _newController = TextEditingController();
+  final TextEditingController _confirmController = TextEditingController();
+
+  bool _hideCurrent = true;
+  bool _hideNew = true;
+  bool _hideConfirm = true;
+  bool _saving = false;
+  String? _errorMessage;
+
+  @override
+  void dispose() {
+    _currentController.dispose();
+    _newController.dispose();
+    _confirmController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    if (_saving) {
+      return;
+    }
+
+    final String email = widget.user.email.trim();
+    final String currentPassword = _currentController.text;
+    final String newPassword = _newController.text;
+    final String confirmPassword = _confirmController.text;
+    final String? validationMessage = _validate(
+      currentPassword: currentPassword,
+      newPassword: newPassword,
+      confirmPassword: confirmPassword,
+    );
+
+    if (email.isEmpty) {
+      setState(() {
+        _errorMessage = 'No existe un correo válido para esta sesión.';
+      });
+      return;
+    }
+
+    if (validationMessage != null) {
+      setState(() {
+        _errorMessage = validationMessage;
+      });
+      return;
+    }
+
+    setState(() {
+      _saving = true;
+      _errorMessage = null;
+    });
+
+    bool currentPasswordValidated = false;
+
+    try {
+      final SupabaseClient client = SupabaseService.instance.requireClient();
+
+      await client.auth.signInWithPassword(
+        email: email,
+        password: currentPassword,
+      );
+      currentPasswordValidated = true;
+
+      await client.auth.updateUser(UserAttributes(password: newPassword));
+      await SessionStore.instance.signOut();
+
+      if (!mounted) {
+        return;
+      }
+
+      Navigator.pop(context, true);
+    } on AuthException catch (error) {
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _saving = false;
+        _errorMessage = !currentPasswordValidated && _isCredentialError(error)
+            ? 'La contraseña actual no es correcta.'
+            : 'No se pudo cambiar la contraseña.';
+      });
+    } catch (error) {
+      debugPrint('No se pudo cambiar la contraseña: $error');
+
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _saving = false;
+        _errorMessage = 'No se pudo cambiar la contraseña.';
+      });
+    }
+  }
+
+  String? _validate({
+    required String currentPassword,
+    required String newPassword,
+    required String confirmPassword,
+  }) {
+    if (currentPassword.isEmpty ||
+        newPassword.isEmpty ||
+        confirmPassword.isEmpty) {
+      return 'Completa todos los campos.';
+    }
+
+    if (newPassword.length < 8) {
+      return 'La nueva contraseña debe tener al menos 8 caracteres.';
+    }
+
+    if (newPassword == currentPassword) {
+      return 'La nueva contraseña debe ser distinta a la actual.';
+    }
+
+    if (newPassword != confirmPassword) {
+      return 'Las contraseñas no coinciden.';
+    }
+
+    return null;
+  }
+
+  bool _isCredentialError(AuthException error) {
+    final String message = error.message.toLowerCase();
+    return message.contains('invalid login') ||
+        message.contains('invalid credentials') ||
+        message.contains('invalid email or password') ||
+        message.contains('incorrect');
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+      title: const Row(
+        children: [
+          Icon(Icons.lock_reset_rounded, color: azulPrincipal),
+          SizedBox(width: 10),
+          Expanded(child: Text('Cambiar contraseña')),
+        ],
+      ),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _PasswordField(
+              controller: _currentController,
+              label: 'Contraseña actual',
+              obscureText: _hideCurrent,
+              enabled: !_saving,
+              onToggle: () {
+                setState(() {
+                  _hideCurrent = !_hideCurrent;
+                });
+              },
+            ),
+            const SizedBox(height: 12),
+            _PasswordField(
+              controller: _newController,
+              label: 'Nueva contraseña',
+              obscureText: _hideNew,
+              enabled: !_saving,
+              onToggle: () {
+                setState(() {
+                  _hideNew = !_hideNew;
+                });
+              },
+            ),
+            const SizedBox(height: 12),
+            _PasswordField(
+              controller: _confirmController,
+              label: 'Confirmar nueva contraseña',
+              obscureText: _hideConfirm,
+              enabled: !_saving,
+              onSubmitted: (_) => _submit(),
+              onToggle: () {
+                setState(() {
+                  _hideConfirm = !_hideConfirm;
+                });
+              },
+            ),
+            if (_errorMessage != null) ...[
+              const SizedBox(height: 12),
+              Text(
+                _errorMessage!,
+                style: const TextStyle(
+                  color: rojo,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: _saving ? null : () => Navigator.pop(context, false),
+          child: const Text('Cancelar'),
+        ),
+        ElevatedButton(
+          onPressed: _saving ? null : _submit,
+          style: ElevatedButton.styleFrom(
+            backgroundColor: azulPrincipal,
+            foregroundColor: Colors.white,
+          ),
+          child: _saving
+              ? const SizedBox(
+                  width: 18,
+                  height: 18,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: Colors.white,
+                  ),
+                )
+              : const Text('Guardar'),
+        ),
+      ],
+    );
+  }
+}
+
+class _PasswordField extends StatelessWidget {
+  final TextEditingController controller;
+  final String label;
+  final bool obscureText;
+  final bool enabled;
+  final VoidCallback onToggle;
+  final ValueChanged<String>? onSubmitted;
+
+  const _PasswordField({
+    required this.controller,
+    required this.label,
+    required this.obscureText,
+    required this.enabled,
+    required this.onToggle,
+    this.onSubmitted,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return TextField(
+      controller: controller,
+      enabled: enabled,
+      obscureText: obscureText,
+      textInputAction: TextInputAction.next,
+      onSubmitted: onSubmitted,
+      decoration: InputDecoration(
+        labelText: label,
+        suffixIcon: IconButton(
+          onPressed: enabled ? onToggle : null,
+          icon: Icon(
+            obscureText
+                ? Icons.visibility_outlined
+                : Icons.visibility_off_outlined,
+          ),
+        ),
+      ),
     );
   }
 }

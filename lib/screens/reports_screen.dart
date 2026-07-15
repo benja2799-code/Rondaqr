@@ -43,7 +43,6 @@ class _ReportsScreenState extends State<ReportsScreen> {
   bool _loadingOnlineRounds = false;
   bool _onlineRoundsLoaded = false;
   String? _onlineRoundsError;
-  String? _onlineRoundsTechnicalDetail;
 
   @override
   void initState() {
@@ -72,7 +71,6 @@ class _ReportsScreenState extends State<ReportsScreen> {
     setState(() {
       _loadingOnlineRounds = true;
       _onlineRoundsError = null;
-      _onlineRoundsTechnicalDetail = null;
     });
 
     try {
@@ -102,9 +100,6 @@ class _ReportsScreenState extends State<ReportsScreen> {
         _onlineRoundsLoaded = true;
         _onlineRoundsError =
             'No se pudo cargar la información de reportes desde Supabase.';
-        _onlineRoundsTechnicalDetail = error is SupabaseHistoryLoadException
-            ? error.technicalDetail
-            : error.toString();
       });
     } finally {
       if (mounted) {
@@ -647,7 +642,6 @@ class _ReportsScreenState extends State<ReportsScreen> {
                         : _onlineRoundsError != null
                         ? _ReportsLoadError(
                             message: _onlineRoundsError!,
-                            technicalDetail: _onlineRoundsTechnicalDetail,
                             onRetry: _loadOnlineReportRounds,
                           )
                         : !hasReportData
@@ -1075,14 +1069,9 @@ class _ReportsLoading extends StatelessWidget {
 
 class _ReportsLoadError extends StatelessWidget {
   final String message;
-  final String? technicalDetail;
   final Future<void> Function() onRetry;
 
-  const _ReportsLoadError({
-    required this.message,
-    required this.technicalDetail,
-    required this.onRetry,
-  });
+  const _ReportsLoadError({required this.message, required this.onRetry});
 
   @override
   Widget build(BuildContext context) {
@@ -1104,18 +1093,6 @@ class _ReportsLoadError extends StatelessWidget {
                   fontWeight: FontWeight.bold,
                 ),
               ),
-              if (technicalDetail != null && technicalDetail!.isNotEmpty) ...[
-                const SizedBox(height: 10),
-                Text(
-                  'Detalle técnico: $technicalDetail',
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(
-                    color: _grisTexto,
-                    fontSize: 12,
-                    height: 1.35,
-                  ),
-                ),
-              ],
               const SizedBox(height: 14),
               OutlinedButton.icon(
                 onPressed: onRetry,
